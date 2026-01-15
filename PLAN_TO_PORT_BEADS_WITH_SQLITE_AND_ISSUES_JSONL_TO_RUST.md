@@ -38,6 +38,164 @@ This document outlines the comprehensive plan to port the "classic" beads issue 
 
 ---
 
+## Background: Legacy Beads (bd)
+
+### What Is Beads?
+
+Beads is an **agent-first issue tracker** designed for AI coding workflows. Unlike traditional issue trackers (Jira, Linear, GitHub Issues), beads is optimized for:
+
+- **Local-first operation:** All data lives in `.beads/` directory within your project
+- **Git-native sync:** JSONL export enables git-based collaboration without external services
+- **Dependency-aware:** First-class support for blocking relationships and ready-work queries
+- **Machine-readable:** JSON output mode for programmatic access by AI agents
+
+### Core Architecture (Pre-Gastown)
+
+```
+.beads/
+├── beads.db          # SQLite database (primary storage)
+└── issues.jsonl      # JSONL export (git-tracked, human-readable)
+```
+
+**Two-Store Hybrid Design:**
+
+1. **SQLite (beads.db):** Fast queries, ACID transactions, relational integrity
+2. **JSONL (issues.jsonl):** Git-friendly format for sync, merge, and history
+
+**Sync Flow:**
+- On write: SQLite updated → issue marked dirty → JSONL export triggered
+- On pull: JSONL newer than DB → import into SQLite (last-write-wins merge)
+
+### Key Data Model
+
+| Entity | Purpose |
+|--------|---------|
+| **Issue** | Core work item with ~30 fields (title, description, status, priority, type, etc.) |
+| **Dependency** | Directed edge between issues (blocks, parent-child, related, etc.) |
+| **Label** | Arbitrary tags for categorization |
+| **Event** | Audit trail of all changes (status transitions, field updates, comments) |
+
+**Status Workflow:**
+```
+open → in_progress → blocked → closed
+         ↓              ↓
+      deferred      (can return to open)
+```
+
+**Priority Levels:** P0 (critical) → P1 (high) → P2 (medium) → P3 (low) → P4 (backlog)
+
+**Issue Types:** task, bug, feature, epic, chore, docs, question
+
+### Key Commands (Pre-Gastown)
+
+| Command | Purpose |
+|---------|---------|
+| `bd init` | Initialize `.beads/` directory |
+| `bd create` | Create new issue |
+| `bd update` | Modify issue fields |
+| `bd close` | Close one or more issues |
+| `bd list` | List issues with filters |
+| `bd show` | Show issue details |
+| `bd ready` | Show unblocked work (no open blockers) |
+| `bd blocked` | Show blocked issues |
+| `bd dep add/remove` | Manage dependencies |
+| `bd label add/remove` | Manage labels |
+| `bd sync` | Export to JSONL |
+| `bd stale` | Find stale issues |
+| `bd duplicates` | Find duplicate issues |
+| `bd orphans` | Find orphan issues |
+| `bd graph` | Visualize dependencies |
+| `bd comments` | Add/view comments |
+
+### What Gastown Changed
+
+The Go `bd` tool was later extended with "Gastown" features for multi-agent coordination:
+- Agent identity tracking (agent, role types)
+- Work molecules, rigs, convoys
+- Gates for coordination
+- HOP (Handoff Protocol) fields
+- Session management
+
+**These additions nearly doubled the codebase complexity.** This port explicitly targets the simpler, pre-Gastown architecture.
+
+---
+
+## Background: Beads Viewer (bv)
+
+### What Is Beads Viewer?
+
+**Beads Viewer (`bv`)** is a separate Go tool that provides:
+
+1. **Interactive TUI:** Beautiful terminal interface with Vim-style navigation
+2. **Graph Analysis:** 9 rigorous algorithms for dependency analysis
+3. **Robot Mode:** Deterministic JSON output for AI agents (`--robot-*` flags)
+
+**Critical distinction:** `bv` is **read-only**. It reads `.beads/issues.jsonl` but never writes to it.
+
+### Division of Labor
+
+| Tool | Role | Writes? | Key Capability |
+|------|------|---------|----------------|
+| **bd/br** | Issue lifecycle management | ✅ Yes | Create, update, close, sync |
+| **bv** | Analysis and visualization | ❌ No | Graph metrics, triage, planning |
+
+**This means `br` should NOT duplicate `bv` functionality.** Specifically, `br` should NOT implement:
+
+- Dependency tree visualization (use `bv --robot-graph`)
+- PageRank/betweenness/centrality metrics (use `bv --robot-insights`)
+- Critical path analysis (use `bv --robot-insights`)
+- Cycle detection (use `bv --robot-insights`)
+- Triage recommendations (use `bv --robot-triage`)
+- Burndown/forecasting (use `bv --robot-burndown/forecast`)
+- Label health analysis (use `bv --robot-label-health`)
+
+### What bv Provides (So br Doesn't Have To)
+
+**Graph Algorithms (9 metrics):**
+
+| Metric | What It Measures |
+|--------|------------------|
+| PageRank | Recursive dependency importance (what unblocks the most work?) |
+| Betweenness | Bottleneck detection (what bridges clusters?) |
+| HITS | Hub/Authority duality (epics vs utilities) |
+| Critical Path | Longest chain (minimum time to completion) |
+| Eigenvector | Influence via neighbors |
+| Degree | Direct connection counts |
+| Density | Project coupling health |
+| Cycles | Circular dependency detection |
+| Topological Sort | Valid execution order |
+
+**Robot Commands (AI agent interface):**
+
+```bash
+bv --robot-triage          # THE mega-command: everything an agent needs
+bv --robot-next            # Just the top recommendation
+bv --robot-plan            # Parallel execution tracks
+bv --robot-insights        # Full graph metrics
+bv --robot-priority        # Priority suggestions
+bv --robot-diff --diff-since HEAD~10  # Changes since ref
+bv --robot-graph --graph-format=mermaid  # Dependency graph export
+```
+
+**TUI Views:**
+
+| Key | View | Purpose |
+|-----|------|---------|
+| `l` | List | Scrollable list with fuzzy search |
+| `b` | Board | Kanban columns |
+| `g` | Graph | Interactive dependency DAG |
+| `i` | Insights | 6-panel metrics dashboard |
+| `a` | Actionable | Parallel execution plan |
+
+### Scope Boundary
+
+> **`br` handles issue lifecycle (CRUD, sync).**
+> **`bv` handles analysis (metrics, visualization, triage).**
+
+This separation keeps both tools focused and avoids duplication.
+
+---
+
 ## Architecture Overview
 
 ### What We're Porting
