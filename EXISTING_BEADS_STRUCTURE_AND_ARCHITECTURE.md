@@ -3766,7 +3766,7 @@ Use these assertions to validate parity with `bd` (classic, non-Gastown). Each i
 - **Ready semantics**: blocked cache usage, pinned/ephemeral excluded, `defer_until` respected.
 - **Close semantics**: cannot close with open blockers unless forced; sets `closed_at`, `close_reason`, `closed_by_session`.
 - **Import collision rules**: external_ref priority, tombstone protection, timestamp-aware protection.
-- **JSONL format**: one issue per line; skip ephemeral; include tombstones; no trailing newline.
+- **JSONL format**: one issue per line (json.Encoder adds a newline per record); skip ephemeral; include tombstones.
 - **Auto-import**: hash-based staleness check; conflict marker abort; skip when `--no-auto-import` set.
 - **Auto-flush**: debounced, atomic write, final flush on exit unless sync says otherwise.
 - **Config precedence**: flags > env > project config > user config > defaults; yaml-only keys honored.
@@ -3823,6 +3823,1581 @@ Porting note:
 Porting note:
 - These are read-only views but rely on the same `IssueFilter` semantics as list/search.
 
+### 15.25 Dependency Tree and Cycle Detection Details
+
+**Dependency tree output shape**:
+- `GetDependencyTree` returns a **flat list** of `TreeNode` records, not a nested tree.
+- Each node includes `Depth` (root = 0) and `ParentID` to allow UI tree reconstruction.
+- Rows are ordered by `depth`, then `priority`, then `id` for stable rendering.
+- `maxDepth <= 0` defaults to **50**; nodes at `depth == maxDepth` are flagged `Truncated = true`.
+
+**Traversal direction**:
+- Normal mode (`reverse=false`) walks **dependencies** (what blocks this issue).
+- Reverse mode (`reverse=true`) walks **dependents** (what depends on this issue).
+- External refs are appended **only** in normal mode (dependencies); reverse mode shows local dependents only.
+
+**Cycle safety and substring bug fix**:
+- Recursive CTE tracks a `path` string with a `→` delimiter to avoid cycles.
+- Path exclusion checks are **boundary-aware** (avoids false positives like `bd-10` containing `bd-1`).
+- Result: the classic substring bug is explicitly covered by tests and blocked by path matching.
+
+**Dedup vs full paths**:
+- `showAllPaths=false` (default) deduplicates nodes by ID; the **shallowest occurrence wins**.
+- `showAllPaths=true` keeps duplicates so diamond-shaped graphs show **all paths**.
+
+**External dependencies in the tree**:
+- External refs (`external:project:capability`) are **synthetic leaf nodes**.
+- Each external node uses status from `CheckExternalDep`:
+  - satisfied → `closed`, title prefixed with `✓`
+  - unsatisfied → `blocked`, title prefixed with `⏳`
+- External nodes are added at `parentDepth + 1` and skipped if parent is already at `maxDepth`.
+
+**Cycle detection policy**:
+- `AddDependency` prevents cycles via a recursive CTE with `maxDependencyDepth = 100`.
+- All dependency types participate **except** `relates-to` (intentionally bidirectional).
+- Cross-type cycles are blocked (e.g., `blocks` + `parent-child` + `discovered-from`).
+- Self-dependencies are rejected; parent-child direction is validated (parent cannot depend on child).
+- External refs do not participate in cycles (they cannot be traversed).
+- `DetectCycles` exists for reporting: DFS over non-`relates-to` edges, with cycle normalization.
+
+Porting note:
+- Reproduce **flat list semantics**, depth/defaults, dedup behavior, and external node synthesis.
+- Preserve cycle-prevention semantics and the substring-safe path filtering.
+
+### 15.26 JSONL Export Edge Cases and Integrity
+
+**Safety guard (empty DB)**:
+- Full export refuses to overwrite a **non-empty JSONL** if the database has **zero issues**.
+- This prevents catastrophic overwrites from empty/corrupt DB states.
+
+**Canonical export content**:
+- Always includes tombstones; always excludes ephemerals/wisps.
+- Always sorts by ID for deterministic output.
+- Uses `json.Encoder` (one JSON object per line, newline after each record).
+
+**Atomic write + permissions**:
+- Export writes to a temp file in the same directory, then renames atomically.
+- Single-repo export sets permissions to **0600** (rw-------).
+- Auto-flush and multi-repo exports set permissions to **0644** (rw-r--r--), and skip chmod for symlinks.
+- Multi-repo export writes **empty JSONL** for repos with zero issues to keep clones in sync.
+- Relative repo paths resolve **from repo root**, not CWD (prevents `.beads/oss/.beads` mistakes).
+
+**Deferred finalize (sync atomicity)**:
+- `exportToJSONLDeferred` writes JSONL but **does not** update metadata.
+- `finalizeExport` runs only after git commit, then:
+  - clears `dirty_issues`,
+  - updates `jsonl_content_hash` and `last_import_time`,
+  - touches DB mtime to be ≥ JSONL mtime.
+- Metadata failures are warnings only (export still succeeds).
+
+**Auto-flush integrity check**:
+- Stored `jsonl_file_hash` is compared to current JSONL content hash.
+- If JSONL is missing or hash mismatches, **export_hashes are cleared** and `jsonl_file_hash` is reset.
+- This forces a **full export** and prevents perpetual mismatch warnings.
+
+**Export policies and manifests**:
+- Error policy: `strict`, `best-effort`, `partial`, `required-core` (auto-export defaults to best-effort).
+- Labels/comments are treated as **enrichments**; policy may allow exporting core data without them.
+- `export.skip_encoding_errors=true` skips bad issues and records warnings.
+- `export.write_manifest=true` writes `.manifest.json` next to the JSONL with warnings/partials/failed IDs.
+- Manifest writes are atomic and set permissions to **0600**.
+
+Porting note:
+- Preserve the empty-DB safety check, atomic writes, permission modes, hash tracking, and
+  the **integrity-driven full export** fallback when JSONL content diverges.
+
+---
+
+### 15.27 Adaptive Hash IDs, Prefix Heuristics, and Partial Resolution
+
+**Adaptive base36 hash IDs (top-level only)**:
+- Hash IDs use **base36** (0-9, a-z) with adaptive length **3-8** characters.
+- Adaptive length is computed from **top-level issue count only** (children are excluded by checking for no dot suffix after the prefix).
+- Collision probability is estimated with a birthday-paradox approximation; the first length whose probability is <= threshold is chosen.
+- Config keys (DB-backed):  
+  - `max_collision_prob` (default 0.25)  
+  - `min_hash_length` (default 3)  
+  - `max_hash_length` (default 8)
+- If adaptive length lookup fails, fallback length is **6**.
+
+**Hash ID generation**:
+- Candidate ID = `prefix + "-" + base36(hash(title|description|creator|created_at_unix_nano|nonce))`.
+- For each length from `baseLength..8`, try **nonce 0..9** and check for collisions in DB.
+- Batch ID generation tracks **intra-batch collisions** using an in-memory set.
+
+**Hierarchical IDs**:
+- A hierarchical ID is `parentID.N` (numeric suffix after the **last** dot).  
+  This is robust to prefixes that contain dots (e.g., `my.project-abc.1`).
+- Child IDs are generated via a **child_counters** table with atomic `INSERT ... ON CONFLICT` increments.
+- Explicit child IDs (via import or --id) **update the counter** so future auto IDs do not collide.
+- Max depth enforced by `hierarchy.max-depth` (default **3**); if unset or <1, default is used.
+
+**Prefix extraction and validation**:
+- Prefix extraction prefers the **last hyphen** when the suffix is numeric or hash-like.  
+  If the suffix looks word-like (4+ chars with no digits), it falls back to the **first hyphen**.
+- Explicitly provided IDs are prefix-validated **unless** `skipPrefixValidation` is set (import/multi-repo).
+- Allowed prefixes are respected via `allowed_prefixes` config; **multi-repo mode allows all prefixes**.
+
+**Partial ID resolution algorithm**:
+- Fast path: try **exact ID match** via `SearchIssues` with ID filter (not `GetIssue`).
+- Normalize by adding configured `issue_prefix` plus hyphen if missing (prefix default = `bd`).
+- If exact match fails, scan all issues and match **hash substrings** across prefixes:
+  - Prefer exact hash match (ignoring prefix), then substring match.
+  - Ambiguity yields an error listing candidate IDs.
+
+---
+
+### 15.28 Parent Resurrection and Orphan Handling
+
+**Orphan handling modes** (`import.orphan_handling`):
+- `strict`: fail import on missing parent
+- `resurrect`: attempt resurrection (default in some batch ops)
+- `skip`: skip orphaned children with warning
+- `allow`: allow orphans without validation (default for legacy tolerance)
+
+**Resurrection behavior (JSONL-based)**:
+- If a parent ID is missing during child ID generation or import, the system scans `.beads/issues.jsonl`
+  for the **last occurrence** of that ID and creates a **closed placeholder** issue:
+  - Status = `closed`, priority = 4, updated/closed timestamps = now
+  - Description is prefixed with a `[RESURRECTED]` note, and the original description is appended
+  - Dependencies are copied **only if the target issues already exist**
+- Resurrecting a deep child will **recursively ensure ancestor chain** exists.
+
+---
+
+### 15.29 Update, Close, and Tombstone Semantics (Storage Layer)
+
+**Update constraints**:
+- Updates are **whitelisted** by field name; unrecognized fields are rejected.
+- Status updates **cannot set `tombstone`** directly (must use delete/tombstone flow).
+- `closed_at` is auto-managed when status changes unless explicitly supplied:
+  - `status -> closed` sets `closed_at = now`
+  - `closed -> non-closed` clears `closed_at` and **clears `close_reason`**
+- Content hash is recomputed when any content fields change:
+  `title`, `description`, `design`, `acceptance_criteria`, `notes`, `status`, `priority`,
+  `issue_type`, `assignee`, `external_ref`.
+- Updates always:
+  - Create an event (`updated`, `status_changed`, `closed`, `reopened`)
+  - Mark the issue as **dirty**
+  - Rebuild blocked cache if `status` changed
+
+**Close semantics**:
+- `CloseIssue` sets status to `closed`, writes `closed_at`, `close_reason`,
+  and `closed_by_session` (if provided).
+- Close reason is stored **both** in the issue row and as the event comment.
+- Close **rebuilds blocked cache** and marks issue dirty.
+- Legacy code also auto-closes **convoys** (Gastown) when all tracked issues close;
+  this behavior should be **excluded** in `br`.
+
+**Tombstone semantics**:
+- Tombstone creation:
+  - status = `tombstone`
+  - `closed_at = NULL` (enforced by constraint)
+  - `deleted_at/by/reason` set, `original_type` preserved
+  - event recorded, dirty marked, blocked cache rebuilt
+- Hard delete:
+  - Removes dependencies (both directions), events, comments, dirty markers, then issue
+
+---
+
+### 15.30 Ready Work and Blocked Cache (Implementation Details)
+
+**Blocked cache**:
+- `blocked_issues_cache` is a **materialized set** of blocked issue IDs.
+- Rebuilt on:
+  - add/remove dependency types that affect readiness
+  - any status change or close (blockers change)
+- Full rebuild uses recursive CTE and propagates parent-child blocking **transitively** (depth <= 50).
+
+**Blocking rules captured in cache**:
+- `blocks`: blocked while blocker is open/in_progress/blocked/deferred/hooked
+- `conditional-blocks`: blocked unless blocker is closed **with failure reasons**
+  (substring match of: failed, rejected, wontfix, won't fix, canceled/cancelled,
+  abandoned, blocked, error, timeout, aborted)
+- `waits-for`: fanout gate on children of spawner; metadata gate defaults to `all-children`
+  (blocked while **any** child is open), `any-children` (blocked until **any** child closes)
+- `parent-child`: children inherit parent blockage
+
+**Ready query defaults**:
+- Status defaults to `open` + `in_progress`
+- Excludes `pinned` and `ephemeral` (wisps)
+- Excludes internal workflow types by default: `merge-request`, `gate`, `molecule`, `message`, `agent`
+- Optional filters: assignee/unassigned, labels (AND/OR), parent subtree, mol_type, priority,
+  deferred handling (`include_deferred`)
+- Sort policies:
+  - `hybrid` (default): priority for recent items, age for older
+  - `priority`
+  - `oldest`
+
+**External dependencies**:
+- External dep format: `external:<project>:<capability>`
+- Considered satisfied when external project has a **closed issue** with label `provides:<capability>`.
+- Resolution uses **batch DB opens** per project to avoid O(N) overhead.
+- Ready/blocked views filter or annotate based on external dep satisfaction.
+
+**IsBlocked / suggest-next**:
+- `IsBlocked` checks cache membership, then returns **blocking issue IDs** for `blocks` only.
+- `GetNewlyUnblockedByClose` returns open/in_progress issues that depended on the closed issue
+  and are **no longer in blocked cache**.
+
+---
+
+### 15.31 Import Pipeline Deep Dive
+
+**Pre-processing**:
+- Canonicalizes **Linear** external refs to avoid slug duplicates.
+- Recomputes **content hashes** for all incoming issues (JSONL hash is not trusted).
+- Marks issues as **ephemeral** if ID contains `-wisp-`.
+- In multi-repo mode, **skip prefix validation** by default.
+- Clears `export_hashes` before import to avoid staleness.
+
+**Prefix mismatch handling**:
+- Valid prefixes = configured prefix + `allowed_prefixes`; multi-repo allows all.
+- If all mismatches are **tombstones**, they are dropped as noise.
+- `--rename-on-import` rewrites prefix and **updates all text references** in:
+  title, description, design, acceptance_criteria, notes, comments, dependencies.
+
+**Match precedence and update rules**:
+1) **external_ref match** (highest priority)  
+2) **content hash match**  
+3) **ID match** (collision/update path)
+- Tombstone in DB **always blocks** resurrection.
+- For updates: only apply if `incoming.updated_at` is **newer** than local.
+- Timestamp-aware protection map (`ProtectLocalExportIDs`) can veto updates.
+- `pinned` is only updated when explicitly true in JSONL (omitempty behavior).
+- `assignee` and `external_ref` set to `NULL` if incoming value is empty.
+
+**Batch creation**:
+- New issues are sorted by **hierarchy depth** and created depth-by-depth.
+- Orphan skip mode pre-filters missing-parent children to avoid partial inserts.
+
+**Dependencies, labels, comments**:
+- Dependencies are inserted if missing; FK failures are skipped with warnings (unless strict).
+- Labels are additive (missing labels added, existing untouched).
+- Comments are deduped by `(author, trimmed text)`; timestamps are preserved on import.
+
+---
+
+### 15.32 Export Error Policies and Manifests
+
+**Error policies**:
+- `strict` (default for manual export): fail fast
+- `best-effort` (default for auto-export): skip with warnings
+- `partial`: retry then skip with manifest entries
+- `required-core`: fail on core data, skip enrichments
+
+**Export config keys**:
+- `export.error_policy`
+- `auto_export.error_policy`
+- `export.retry_attempts` (default 3)
+- `export.retry_backoff_ms` (default 100)
+- `export.skip_encoding_errors` (default false)
+- `export.write_manifest` (default false)
+
+**Manifests**:
+- Written as `.manifest.json` next to JSONL using atomic temp rename.
+- Permissions set to **0600** (warn-only on failure).
+
+**Multi-repo export details**:
+- Groups by `source_repo` and writes **one JSONL per repo**.
+- Empty JSONL is written for repos with zero issues to keep clones in sync.
+- Paths are resolved relative to **repo root** (parent of `.beads/`), not CWD.
+- Uses `Lstat` for mtime updates to avoid symlink target issues.
+
+---
+
+### 15.33 List/Search Defaults and Filter Wiring
+
+**List defaults**:
+- If `--status` is not specified and `--all` is not set, **closed issues are excluded**.
+- `--ready` forces `status=open` (not in_progress/blocked/deferred).
+- Templates are excluded unless `--include-templates`.
+- Gate issues are excluded unless `--include-gates` or `--type gate`.
+- Directory-aware label scoping applies when **no labels are provided**.
+- `--limit 0` means **unlimited**; agent mode defaults to **20** when not specified.
+
+**Search semantics**:
+- `SearchIssues` uses **LIKE** matching on `title`, `description`, and `id`.
+- Default ordering is `priority ASC, created_at DESC`.
+- Tombstones are excluded unless `IncludeTombstones` is set.
+
+---
+
+### 15.34 Update Validation Rules (Field-Level)
+
+**Field validation rules**:
+- Title length: **1..500**
+- Priority: **0..4**
+- IssueType: must be built-in (custom types allowed via config at higher layers)
+- Estimated minutes: **non-negative**
+- Status: built-in or custom; **tombstone is blocked** in updates
+
+**Allowed update fields (storage whitelist)**:
+- Core: `status`, `priority`, `title`, `description`, `design`, `acceptance_criteria`,
+  `notes`, `issue_type`, `assignee`, `estimated_minutes`, `external_ref`
+- Close fields: `closed_at`, `close_reason`, `closed_by_session`
+- Scheduling: `due_at`, `defer_until`
+- Pinned/wisp: `pinned`, `wisp` (maps to `ephemeral`)
+- Additional fields exist for Gastown/agent features (exclude in `br` classic port)
+
+---
+
+### 15.35 Auto-Import, Auto-Flush, and Staleness Detection
+
+**JSONL path discovery**:
+- Primary resolution uses `BEADS_JSONL` env var.
+- Otherwise derive `.beads/issues.jsonl` from the **DB path**; in `--no-db` mode,
+  walk up to find `.beads/` and use its JSONL.
+- Auto-flush creates `.beads/` if missing (best-effort).
+
+**Auto-import trigger (hash-based, git-safe)**:
+- Reads entire JSONL and computes **SHA256 hash**.
+- Compares against metadata `jsonl_content_hash` (fallback: legacy `last_import_hash`).
+- If hash differs → parse JSONL and import.
+- Hash comparison avoids mtime pitfalls after `git pull` or file touch.
+
+**Auto-import safety**:
+- Rejects JSONL containing **git conflict markers** (`<<<<<<<`, `=======`, `>>>>>>>`) on standalone lines.
+- Applies `Issue.SetDefaults()` and fixes closed-at invariant when missing.
+- Marks wisps as ephemeral if ID contains `-wisp-` (defense-in-depth).
+- Clears `export_hashes` before import to avoid staleness.
+- Auto-import is **lenient**: `SkipPrefixValidation=true`.
+- If DB is “cold-start” with no `issue_prefix`, it **infers prefix** from JSONL
+  (or repo dir name) and sets config before import.
+
+**Staleness detection (read-time)**:
+- `ensureDatabaseFresh` is called by **read commands** in **direct mode**.
+- It checks `autoimport.CheckStaleness`:
+  - Parses `last_import_time` (RFC3339Nano, fallback RFC3339).
+  - Compares JSONL **mtime** (via `Lstat`, not Stat to avoid symlink false positives).
+- If stale:
+  - If auto-import enabled → runs auto-import and continues.
+  - If `--no-auto-import` → error with explicit recovery steps.
+- `--allow-stale` skips the check with a warning.
+- **Daemon mode bypass**: call sites **skip** `ensureDatabaseFresh` when daemon client is active
+  because the daemon auto-imports before serving queries.
+
+**Daemon freshness guard**:
+- Long-lived daemon connections use a **FreshnessChecker** that detects DB file replacement
+  (inode/mtime) and triggers a reconnection to avoid stale handles.
+
+**Auto-flush (debounced JSONL export)**:
+- All mutating commands call `markDirtyAndScheduleFlush()` or `markDirtyAndScheduleFullExport()`.
+- Flush is coordinated by a **FlushManager**:
+  - Single goroutine owns dirty state; no shared mutable state.
+  - Debounce interval controlled by `flush-debounce` (env `BEADS_FLUSH_DEBOUNCE`).
+  - `FlushNow()` bypasses debounce; `Shutdown()` performs a final flush.
+- Flush is no-op if auto-flush is disabled (`--no-auto-flush`).
+
+**Incremental vs full export**:
+- Incremental: fetch dirty IDs, **merge** with existing JSONL map.
+- Full: rebuild JSONL from scratch (used for ID remaps or integrity failures).
+- Export always filters **wisps** and, in multi-repo mode, may filter by prefix
+  for non-primary repos.
+- After export:
+  - Clears dirty IDs
+  - Updates `jsonl_content_hash`, `jsonl_file_hash`, and `last_import_time`
+    to prevent staleness loops.
+
+**JSONL integrity validation**:
+- Before flush, compare **stored JSONL file hash** with current file hash.
+- On mismatch or missing JSONL:
+  - Clear `export_hashes` and `jsonl_file_hash`
+  - Force **full export** to restore consistency
+
+---
+
+### 15.36 Delete/Tombstone Workflow and Reference Rewriting
+
+**Delete command flow (direct mode)**:
+1) Preview unless `--force`  
+2) Update connected issues’ text references: replace `ID` → `[deleted:ID]`  
+3) Remove dependency links (both directions)  
+4) Create tombstone (default) or hard delete if requested  
+5) Mark dirty + auto-flush
+
+**Reference rewriting (edge-safe)**:
+- Uses a boundary-aware regex: ID is replaced only when surrounded by **non-word**
+  boundaries where “word” includes letters, digits, `_`, and `-`.
+- Fields updated: `description`, `notes`, `design`, `acceptance_criteria`.
+- The in-memory copies of connected issues are updated after replacement to avoid double-rewrite.
+
+**Batch deletion**:
+- Uses `DeleteIssues` (storage) for cascade/force semantics and returns:
+  - `deleted_count`, `dependencies_removed`, `labels_removed`, `events_removed`
+  - `orphaned_issues` (when forced without cascade)
+- Connected issues are pre-collected and updated after deletion with the same reference rewrite logic.
+
+**Cascade vs force**:
+- `--cascade`: recursively deletes all dependents.
+- `--force`: deletes the selected issues and **orphans** dependents.
+- Without either: deletion fails if dependents exist (preview explains).
+
+**Hard delete semantics**:
+- `--hard` **does not remove tombstones from DB**; it **prunes tombstones from JSONL**
+  immediately (negative TTL), then advises `bd cleanup --hard` after sync.
+- Tombstones remain in DB to prevent resurrection by subsequent imports.
+
+**Tombstone pruning (JSONL-only)**:
+- `pruneExpiredTombstones` reads JSONL, removes tombstones that exceeded TTL:
+  - Default TTL = `DefaultTombstoneTTL` (30 days).
+  - Custom TTL overrides; negative TTL means prune immediately.
+- Writes JSONL atomically and reports pruned IDs/count.
+
+---
+
+### 15.37 Routing and Multi-Repo Resolution (routes.jsonl)
+
+**Two routing planes**:
+- **Creation routing** (where new issues go): controlled by `routing.mode`
+  (`auto` vs `explicit`) and `routing.default/maintainer/contributor`.
+  - Role detection: git config `beads.role` or push URL heuristics.
+  - `--repo` overrides everything.
+- **ID routing** (where existing issues live): driven by `routes.jsonl` + redirect.
+
+**routes.jsonl format**:
+- JSONL entries: `{ "prefix": "bd-", "path": "beads/mayor/rig" }`
+- Comments and blank lines are ignored.
+- Prefix includes the trailing hyphen.
+
+**Lookup resolution**:
+- For a given ID, extract prefix (substring before first `-`, plus hyphen).
+- Search order:
+  1) `routes.jsonl` in the **current** `.beads/`
+  2) If not found, walk up to **town root** (identified by `mayor/town.json`) and use
+     `<townRoot>/.beads/routes.jsonl`
+- If a prefix match is found:
+  - `path == "."` → town-level `.beads/`
+  - Otherwise resolve relative to town root: `<townRoot>/<path>/.beads`
+  - Apply **redirect** (see below)
+  - Validate target directory exists before routing
+
+**Redirect file**:
+- `.beads/redirect` may contain a path to another beads directory.
+- If present, routing follows the redirect (relative paths resolved from the current beads dir).
+- Used for local overrides, migrations, or multi-worktree setups.
+
+**Forgiving rig lookup** (`--rig` / `--prefix` UX):
+- Accepts `rig`, `prefix` (`bd`), or `prefix-` (`bd-`).
+- Uses routes + town root to resolve to target beads dir and prefix.
+
+**External ref derivation**:
+- If an ID prefix matches a route, it can be converted to
+  `external:<project>:<id>` where `<project>` is the first path segment.
+
+**Routed storage access**:
+- When an ID is routed, the CLI opens a **separate SQLite connection** to the routed beads dir.
+- Callers must close routed storage after use.
+
+---
+
+### 15.38 Initialization and Bootstrap (bd init)
+
+**Non-invasive port note**:
+- Legacy bd installs git hooks, merge drivers, and writes repo-specific git config in init flows.
+- `br` must **not** auto-install or auto-modify git state. Any git integration must be **explicit**
+  and opt-in (per project goals).
+
+**Purpose**:
+- Creates the local `.beads/` workspace and initializes storage.
+- Seeds the database from JSONL in git history or local JSONL when requested.
+
+**Backend and path selection**:
+- `--backend` accepts `sqlite` (default) and `dolt` (legacy; not ported to `br`).
+- Database path comes from `--db`, else `BEADS_DB`, else `.beads/beads.db`.
+- If DB path is inside `.beads/`, init also creates `.beads/` and local files.
+
+**Prefix resolution** (in order):
+1) `--prefix` flag  
+2) config `issue-prefix` (from config.yaml or env)  
+3) first issue found in JSONL from git history  
+4) current directory name  
+- Trailing `-` is stripped (hyphen is added during ID generation).
+
+**Safety guards**:
+- Refuses to run inside a git worktree; must initialize in the main repo root.
+- Refuses to run inside `.beads/` to avoid nested beads directories.
+- Checks for an existing database; aborts unless `--force`.
+- If JSONL exists but DB does not, init proceeds (fresh-clone recovery path).
+- Migrates older `*.db` filenames to `beads.db` if exactly one DB exists.
+
+**No-DB mode (`--no-db`)**:
+- Creates `.beads/issues.jsonl` and `.beads/interactions.jsonl`.
+- Writes `metadata.json` (configfile defaults) and `.beads/config.yaml`.
+- Stores `issue-prefix` in config.yaml because there is no DB config table.
+
+**SQLite mode (default)**:
+- Creates/updates `.beads/.gitignore` from doctor template.
+- Ensures `.beads/interactions.jsonl` exists.
+- Creates storage backend and sets DB config `issue_prefix` (fatal if failure).
+- Writes metadata keys: `bd_version`, `repo_id`, `clone_id` (best-effort).
+- Writes/updates `.beads/metadata.json` and `.beads/config.yaml` templates.
+
+**Sync-branch setup**:
+- `--branch` sets sync branch (writes both config.yaml and DB).
+- No auto-detection of current branch to avoid main/master worktree conflicts.
+
+**Import on init**:
+- Default: scan git history for `.beads/issues.jsonl`, import if found.
+- `--from-jsonl`: import from local `.beads/issues.jsonl` (preserves manual cleanups).
+- Auto-import failure is non-fatal; init continues with empty DB.
+
+**Optional wizards and git setup**:
+- `--contributor` / `--team` run guided setup wizards.
+- `--setup-exclude` configures `.git/info/exclude` for forks.
+- Installs git hooks and merge driver unless `--skip-hooks` / `--skip-merge-driver`.
+- `--stealth` mode configures per-repo git excludes and suppresses hooks/driver.
+
+**Post-init diagnostics**:
+- Adds "landing the plane" instructions to `AGENTS.md` and `@AGENTS.md` (unless stealth).
+- Runs `bd doctor` checks; warns if setup is incomplete.
+
+---
+
+### 15.39 Sync Semantics (bd sync, classic SQLite + JSONL)
+
+**Non-invasive port note**:
+- Legacy bd’s sync assumes automatic git commit/push behavior in many flows.
+- `br` must be **less invasive**: no automatic hooks, no background daemon actions,
+  no implicit commit/push. Any git ops must be explicit CLI commands.
+
+**Direct-mode enforcement**:
+- If daemon is connected, `bd sync` forces direct mode to avoid stale DB handles.
+- Store initialization is re-run after daemon disconnect.
+
+**Modes and early exits**:
+- `--import-only`: import JSONL only (no git ops; inline import to handle redirects).
+- `--flush-only`: export JSONL only.
+- `--squash`: export JSONL only, skipping commit/push (accumulate changes).
+- `--status`: show sync-branch vs main diff.
+- `--merge`: merge sync-branch back to main.
+- `--check`: integrity checks (force-push, prefix mismatch, orphaned children).
+- `--from-main`: one-way sync from default branch for ephemeral branches.
+
+**Redirect handling**:
+- If `.beads/redirect` is active, sync skips all git operations and only exports.
+- Redirect and sync-branch are mutually exclusive; sync warns and proceeds export-only.
+
+**Preflight safety**:
+- Requires a git repo (unless using export-only modes).
+- Aborts if merge/rebase in progress.
+- Detects uncommitted JSONL changes; re-exports from DB to reconcile.
+- If no upstream and no sync-branch, auto-falls back to `--from-main`.
+
+**Pull-first sync (default)**:
+1) Load local issues from DB (includes tombstones).
+2) Acquire `.beads/.sync.lock` (exclusive).
+3) Load base state from `.beads/sync_base.jsonl` (may be missing on first sync).
+4) Pull remote JSONL (sync-branch worktree if configured, else normal pull).
+5) Load remote JSONL state.
+6) 3-way merge: base + local + remote (LWW + union/append rules).
+7) Write merged JSONL, import merged state into DB.
+8) Export DB back to JSONL (DB is source of truth).
+9) Commit/push changes (sync-branch worktree or current branch).
+10) Save new base state and clear sync state.
+
+**No-pull sync (`--no-pull`)**:
+- Export -> commit -> push, under the same lock.
+- Runs pre-export validation, duplicate ID checks, and orphaned dep warnings.
+
+**From-main mode**:
+- Uses `sync.remote` (default `origin`) and detects default branch.
+- `git fetch <remote> <main>` then checks out `.beads/` from remote main.
+- Imports JSONL into DB; forces `no-git-history` to avoid false deletions.
+
+**Key flags**:
+- `--rename-on-import`: rewrite IDs to local prefix and update references.
+- `--no-git-history`: skip git history backfill for deletions (useful for JSONL renames).
+- `--accept-rebase`: accept remote sync-branch history resets (integrity flow).
+
+**Integrity check output**:
+- Reports force-push risk, prefix mismatches, and orphaned children.
+- Exits non-zero if any problems are detected.
+
+---
+
+### 15.40 Configuration System (config.yaml + DB config)
+
+**Non-invasive port note**:
+- `br` should avoid hidden or implicit config that triggers git ops or background behavior.
+- Keep config explicit; prefer on-demand commands over daemon-autostart defaults.
+
+**Config sources and precedence**:
+- Load order: project `.beads/config.yaml` (walk up from CWD), then
+  `~/.config/bd/config.yaml`, then `~/.beads/config.yaml`.
+- Environment variables override config file (prefix `BD_`, dot/hyphen -> underscore).
+- Selected legacy env vars are also bound: `BEADS_FLUSH_DEBOUNCE`,
+  `BEADS_AUTO_START_DAEMON`, `BEADS_IDENTITY`, `BEADS_REMOTE_SYNC_INTERVAL`.
+- Flags override config values at command execution time.
+
+**Two storage planes**:
+- **YAML-only**: startup settings read before DB exists (must live in config.yaml).
+- **DB config**: runtime settings stored in `config` table (versioned with DB).
+
+**YAML-only keys (representative)**:
+- Bootstrap: `no-db`, `no-daemon`, `no-auto-flush`, `no-auto-import`, `json`,
+  `auto-start-daemon`
+- Identity/paths: `db`, `actor`, `identity`
+- Timing: `flush-debounce`, `lock-timeout`, `remote-sync-interval`
+- Git: `git.author`, `git.no-gpg-sign`, `no-push`, `no-git-ops`
+- Sync: `sync-branch`, `sync.branch` (alias), `sync.require_confirmation_on_mass_delete`
+- Routing: `routing.*`
+- Create/validation: `create.require-description`, `validation.*`
+- Hierarchy: `hierarchy.max-depth`
+- Daemon: `daemon.*`
+- Any key with prefixes `routing.`, `sync.`, `git.`, `directory.`, `repos.`,
+  `external_projects.`, `validation.`, `daemon.`, `hierarchy.` is YAML-only.
+
+**Config set/get/list/unset behavior**:
+- `bd config set <key> <value>`:
+  - YAML-only keys update config.yaml (uncomment or append), preserving file.
+  - DB keys require direct mode; `sync.branch` uses sync-branch helper.
+- `bd config get <key>`:
+  - YAML-only keys read from config.yaml (empty => "not set in config.yaml").
+  - DB keys require direct mode; `sync.branch` resolves env/yaml/db precedence.
+- `bd config list`:
+  - Lists DB config only, sorted.
+  - Warns when config.yaml or env overrides DB values (notably sync.branch).
+- `bd config unset <key>`:
+  - Deletes DB config entry only (does not edit config.yaml).
+
+**YAML editing rules**:
+- Values are formatted: booleans lowercased, numbers/durations unquoted,
+  other strings quoted.
+- `sync.branch` is normalized to `sync-branch` in YAML.
+- `hierarchy.max-depth` is validated to be an integer >= 1.
+
+**Sync-branch precedence**:
+1) `BEADS_SYNC_BRANCH` env var  
+2) `sync-branch` in config.yaml  
+3) `sync.branch` in DB  
+- `sync.branch` cannot be `main` or `master` (worktree conflict prevention).
+
+---
+
+### 15.41 Output Formats and JSON Schemas (Core Commands)
+
+**Global JSON conventions**:
+- All JSON uses stable field names from `types.*` structs (snake_case).
+- Arrays are always emitted as `[]` (never `null`) in JSON mode.
+- Time fields serialize as RFC3339 strings (Go `time.Time` JSON).
+- `omitempty` fields are omitted when empty.
+- JSON is pretty-printed with 2-space indent in core CLI (`outputJSON`).
+- JSON errors (when `--json` is active) are emitted to stderr as:
+  `{ "error": "...", "code": "..." }` (code may be omitted).
+
+#### 15.41.1 list
+
+**JSON shape**: array of `IssueWithCounts`
+```json
+[
+  {
+    "id": "bd-abc123",
+    "title": "Example",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "labels": ["backend"],
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-02T00:00:00Z",
+    "dependency_count": 1,
+    "dependent_count": 3
+  }
+]
+```
+**Text formats**:
+- **Compact (default)**: one line per issue  
+  `STATUS_ICON [pin] ID [P#] [type] @assignee [labels] - Title`
+  - Closed issues are fully muted.
+  - Priority uses `● Pn` (colored for P0/P1).
+- **Long (`--long`)**: multi-line per issue:  
+  `ID [P#] [type] status` then title, optional assignee/labels.
+- **Pretty/Tree (`--pretty` or `--tree`)**:
+  - Tree connectors `├──`, `└──` with priority-sorted children.
+  - Status icons: `○` open, `◐` in_progress, `●` blocked, `✓` closed, `❄` deferred.
+  - Root list ends with summary and status key.
+- **Agent mode**: `ID: Title` only (no colors, no emojis).
+- **Format (`--format`)**:
+  - `dot` → Graphviz DOT graph with colored nodes and dependency edges.
+  - `digraph` → edge list (issue_id depends_on_id) for `digraph` tool.
+  - Any other string is treated as a Go template executed per dependency edge.
+- **Pager**: non-agent outputs are piped through a pager unless `--no-pager`.
+
+#### 15.41.2 show
+
+**JSON shape**: array of `IssueDetails` (even for a single ID)
+```json
+[
+  {
+    "id": "bd-abc123",
+    "title": "Example",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "feature",
+    "labels": ["ui", "frontend"],
+    "dependencies": [
+      { "id": "bd-xyz", "title": "Blocker", "dependency_type": "blocks" }
+    ],
+    "dependents": [
+      { "id": "bd-foo", "title": "Child", "dependency_type": "parent-child" }
+    ],
+    "comments": [
+      { "id": 3, "issue_id": "bd-abc123", "author": "alice", "text": "...", "created_at": "..." }
+    ],
+    "parent": "bd-xyz"
+  }
+]
+```
+**Text formats**:
+- **Short (`--short`)**: same line format as pretty list (`STATUS_ICON ID ●P# [type] Title`).
+- **Full**:
+  - Tufte header: `STATUS_ICON ID · Title   [● P# · STATUS]`
+  - Metadata lines: owner/assignee/type and created/updated (plus due/defer if set).
+  - Sections (if present): DESCRIPTION / DESIGN / NOTES / ACCEPTANCE CRITERIA (markdown rendered).
+  - Labels, dependencies, dependents grouped by type, and comments with date+author.
+
+#### 15.41.3 ready
+
+**JSON shape**: array of `Issue`
+```json
+[
+  { "id": "bd-abc", "title": "Ready item", "status": "open", "priority": 2, "issue_type": "task" }
+]
+```
+**Text**:
+- Default: numbered list with `[P#] [type] ID: Title`, plus estimate/assignee if present.
+- `--pretty` uses the same tree output as `list --pretty`.
+- If none: prints either “No ready work found…” or “No open issues”.
+
+#### 15.41.4 blocked
+
+**JSON shape**: array of `BlockedIssue`
+```json
+[
+  {
+    "id": "bd-abc",
+    "title": "Blocked item",
+    "status": "blocked",
+    "priority": 1,
+    "blocked_by_count": 2,
+    "blocked_by": ["bd-1", "bd-2"]
+  }
+]
+```
+**Text**:
+- `[P#] ID: Title` then `Blocked by N open dependencies: [ids]`.
+
+#### 15.41.5 search
+
+**JSON shape**: array of `IssueWithCounts` (same as list).
+
+**Text**:
+- Header: `Found N issues matching 'query'`
+- **Compact (default)**: `ID [P#] [type] status @assignee [labels] - Title`
+- **Long (`--long`)**: multi-line with assignee + labels.
+- **Sorting**: optional `--sort` and `--reverse` are applied after search results load.
+
+#### 15.41.6 status (alias: stats)
+
+**JSON shape**: `StatusOutput`
+```json
+{
+  "summary": {
+    "total_issues": 42,
+    "open_issues": 10,
+    "in_progress_issues": 5,
+    "closed_issues": 20,
+    "blocked_issues": 2,
+    "deferred_issues": 1,
+    "ready_issues": 7,
+    "tombstone_issues": 3,
+    "pinned_issues": 1,
+    "epics_eligible_for_closure": 1,
+    "average_lead_time_hours": 12.5
+  },
+  "recent_activity": {
+    "hours_tracked": 24,
+    "commit_count": 3,
+    "issues_created": 2,
+    "issues_closed": 1,
+    "issues_updated": 4,
+    "issues_reopened": 0,
+    "total_changes": 7
+  }
+}
+```
+**Text**:
+- “Issue Database Status” header with summary and optional extended section.
+- Optional “Recent Activity (last 24 hours)” block.
+- `bd stats` is a direct alias of `bd status`.
+
+#### 15.41.7 count
+
+**JSON (no grouping)**:
+```json
+{ "count": 17 }
+```
+**JSON (grouped)**:
+```json
+{
+  "total": 17,
+  "groups": [
+    { "group": "open", "count": 5 },
+    { "group": "closed", "count": 12 }
+  ]
+}
+```
+**Text**:
+- No grouping: prints a single number.
+- Grouped: `Total: N` then `group: count` sorted by group key.
+
+#### 15.41.8 stale
+
+**JSON shape**: array of `Issue`
+```json
+[ { "id": "bd-abc", "title": "Stale", "updated_at": "..." } ]
+```
+**Text**:
+- “Stale issues (N not updated in D+ days):” with numbered list.
+- Each item prints status, days stale, and optional assignee.
+
+#### 15.41.9 dep
+
+**dep add / dep --blocks JSON**:
+```json
+{ "status": "added", "issue_id": "bd-a", "depends_on_id": "bd-b", "type": "blocks" }
+```
+or (for `--blocks`):
+```json
+{ "status": "added", "blocker_id": "bd-b", "blocked_id": "bd-a", "type": "blocks" }
+```
+**dep remove JSON**:
+```json
+{ "status": "removed", "issue_id": "bd-a", "depends_on_id": "bd-b" }
+```
+**dep list JSON**: array of `IssueWithDependencyMetadata`  
+(all Issue fields + `dependency_type`).
+
+**dep tree JSON**: array of `TreeNode`
+```json
+[
+  { "id": "bd-root", "depth": 0, "parent_id": "", "truncated": false, "title": "Root" },
+  { "id": "bd-child", "depth": 1, "parent_id": "bd-root", "truncated": false, "title": "Child" }
+]
+```
+**dep cycles JSON**: array of cycles, each a list of Issue objects.
+
+**Text**:
+- `dep list`: “ID: Title [P#] (status) via <dependency_type>”
+- `dep tree`: tree connectors with status emoji and optional mermaid output.
+- `dep cycles`: numbered cycles with issue IDs + titles.
+
+#### 15.41.10 label
+
+**label add/remove JSON**: array of results
+```json
+[ { "status": "added", "issue_id": "bd-1", "label": "backend" } ]
+```
+**label list JSON**: array of strings
+```json
+["backend", "ui"]
+```
+**label list-all JSON**: array of `{label,count}` objects.
+
+**Text**:
+- Add/remove prints per-issue confirmation.
+- List prints bullet list; list-all prints aligned label table with counts.
+
+#### 15.41.11 comments
+
+**comments list JSON**: array of `Comment`
+```json
+[ { "id": 1, "issue_id": "bd-1", "author": "alice", "text": "...", "created_at": "..." } ]
+```
+**comments add JSON**: a single `Comment` object.
+
+**Text**:
+- List: “Comments on <id>” then `[author] at YYYY-MM-DD HH:MM` followed by
+  markdown-rendered comment text indented.
+- Add: “Comment added to <id>”.
+
+---
+
+### 15.42 List/Search Filtering Semantics (Classic Port Requirements)
+
+**Limit defaults**:
+- `list`: default 50; if `--limit` is explicitly set to `0`, means unlimited.
+- `list` in agent mode: default 20 (only when `--limit` not specified).
+- `search`: default 50; no agent-mode override.
+- `ready`: default 10.
+- `stale`: default 50.
+
+**Default status filtering**:
+- `list`: if `--status` not set and `--all` not set, **exclude closed**.
+- `list --ready`: forces `status=open` only (no in_progress/blocked/deferred).
+- `search`: no implicit exclusion; includes closed unless `--status` is specified.
+- `search` query matches title/description/id (OR semantics).
+
+**Label filter semantics**:
+- `--label` = AND (issue must have all labels).
+- `--label-any` = OR (issue must have at least one).
+- If **no labels specified**, `list` and `ready` apply `directory.labels`
+  from config for monorepo scoping; `search` does **not**.
+
+**Ordering defaults**:
+- Storage query default ordering is `priority ASC, created_at DESC`.
+- `--sort` overrides with in-memory ordering:
+  - `priority` ascending (P0 before P1).
+  - `created`, `updated`, `closed` are descending (newest first).
+  - `status`, `id`, `title`, `type`, `assignee` are ascending.
+  - `--reverse` flips the chosen sort.
+
+**Pretty/tree fallbacks**:
+- `--tree` is an alias for `--pretty`.
+- `--watch` implies `--pretty`.
+- Tree building uses parent-child dependencies; if not available, falls back
+  to dotted hierarchical IDs (`parent.1`, `parent.1.2`).
+
+**Core JSON shapes (for spec)**:
+- `IssueWithCounts`: flattened Issue fields + `dependency_count`, `dependent_count`.
+- `IssueDetails`: flattened Issue fields + `labels`, `dependencies`, `dependents`,
+  `comments`, `parent` (computed from parent-child deps).
+
+---
+
+### 15.43 Dependency Tree Output (bd dep tree)
+
+**Tree node schema** (`TreeNode`):
+- All `Issue` fields (ID, title, status, priority, etc.).
+- `depth` (int): edges from root (root = 0).
+- `parent_id` (string): immediate parent in the traversal.
+  - Root node uses `parent_id = id`.
+- `truncated` (bool): true if `depth == maxDepth`.
+
+**Traversal direction**:
+- **Down (default)**: dependencies (“what blocks this issue”).
+  - Parent → child edges follow: **issue depends on dependency**.
+- **Up (`--direction=up`)**: dependents (“what this issue blocks”).
+  - Parent → child edges follow: **dependent depends on parent**.
+- **Both**: current implementation concatenates “up” nodes and “down” nodes;
+  visual separation is minimal (legacy behavior).
+
+**Depth ordering & deterministic output**:
+- Recursive CTE yields rows ordered by `depth ASC, priority ASC, id ASC`.
+- This ordering drives the initial `TreeNode` list and the child insertion order
+  in the renderer (stable, deterministic).
+
+**Parent pointer logic**:
+- Each recursion step sets `parent_id = t.id` (the node from which we traversed).
+- For **down**: child is the dependency target.
+- For **up**: child is the dependent.
+- The renderer builds a `parent_id -> children[]` map to render connectors.
+
+**Truncation rules**:
+- `maxDepth <= 0` defaults to **50**.
+- Nodes at `depth == maxDepth` are flagged `truncated=true`.
+- Renderer appends an ellipsis (`…`) when:
+  - `node.truncated` is true, **or**
+  - `depth == maxDepth` and the node has children (indicates hidden depth).
+
+**Cycle protection**:
+- Recursive query maintains a path string with `→` separators and excludes
+  revisits of any ID already on the path.
+
+**Deduplication vs “show all paths”**:
+- `--show-all-paths=false` (default):
+  - Storage **dedupes by ID**, keeping only the shallowest occurrence
+    (first row due to depth ordering).
+- `--show-all-paths=true`:
+  - Storage emits **all path occurrences** (diamonds preserved).
+  - Renderer still prints a short “(shown above)” line for already-seen IDs,
+    to avoid infinite repeats in display.
+
+**External leaf node synthesis**:
+- Only in **down** direction (dependencies).
+- External dependencies are stored as `external:<project>:<capability>`.
+- Synthetic `TreeNode` is created per external ref:
+  - `id` = full external ref
+  - `parent_id` = issue that depends on the external ref
+  - `depth` = parent depth + 1
+  - `status` = `closed` if satisfied, otherwise `blocked`
+  - `title` = `"✓ <capability>"` (satisfied) or `"⏳ <capability>"` (unsatisfied)
+  - `priority` = 0, `issue_type` = task
+- In text rendering, external nodes print as:  
+  `✓ capability (external)` or `⏳ capability (external)` (with status color).
+
+**Text rendering details**:
+- Uses tree connectors (`├──`, `└──`) and vertical bars for siblings.
+- Each line is: `ID: Title [P#] (status)` plus `[READY]` on root if open.
+- External refs are printed from `title` only (ID hidden) and suffixed `(external)`.
+
+---
+
+### 15.44 Comments Command Behavior (bd comments)
+
+**List (`bd comments <id>`)**:
+- Resolves partial IDs to full IDs (daemon: RPC resolve; direct: local resolve).
+- Loads comments ordered by `created_at ASC`.
+- JSON output: array of `Comment` objects (pretty printed):
+```json
+[
+  { "id": 1, "issue_id": "bd-1", "author": "alice", "text": "...", "created_at": "..." }
+]
+```
+- Text output:
+  - Header `Comments on <id>`
+  - For each comment: `[author] at YYYY-MM-DD HH:MM`
+  - Comment body is markdown-rendered and indented.
+
+**Add (`bd comments add <id> <text>` or `-f <file>`)**:
+- Resolves partial ID (same as list).
+- Author resolution (if `--author` not set):
+  - `--actor` → `BD_ACTOR` → `BEADS_ACTOR` → `git config user.name` → `$USER` → `"unknown"`.
+- Inserts a new row with `created_at = CURRENT_TIMESTAMP`.
+- **No deduplication**: repeated identical text is allowed.
+- JSON output: a single `Comment` object (pretty printed).
+- Empty text is allowed (explicitly tested).
+
+**Dedupe rules (import only)**:
+- Comment dedupe happens **during JSONL import**, not during CLI add.
+- Import path dedupes by `(author, trimmed text)` to avoid duplicate comments.
+
+---
+
+### 15.45 dep + label Command UX (Daemon vs Direct)
+
+#### dep (dependencies)
+
+**Add (dep add / dep --blocks)**:
+- Accepts positional or flag syntax:
+  - `bd dep add <issue> <depends-on>`
+  - `bd dep <blocker> --blocks <blocked>`
+- Partial IDs are resolved before mutation:
+  - **Daemon**: RPC `ResolveID`.
+  - **Direct**: local resolver.
+- `external:<project>:<capability>` is allowed as the dependency target:
+  - Validated to `external:<project>:<capability>` format.
+  - Stored **as-is** (no ID resolution).
+- **Anti-pattern guard**: child → parent dependency is rejected to prevent deadlocks.
+- **Cycle warning**: after adding, a cycle scan runs and emits a warning.
+
+**Remove (dep remove)**:
+- Requires two IDs (issue + depends-on), resolves partial IDs first.
+- **Daemon**: RPC `RemoveDependency`.
+- **Direct**: `RemoveDependency` + mark dirty for auto-flush.
+
+**List (dep list)**:
+- Default direction = down (“depends on”); `--direction=up` shows dependents.
+- Optional `--type` filters by dependency type.
+- **Daemon**: list uses local DB if RPC unsupported (fallback to direct mode).
+
+**Tree (dep tree)**:
+- Uses `GetDependencyTree` (see §15.43).
+- `--direction` overrides deprecated `--reverse`.
+- `--format=mermaid` outputs flowchart TD.
+- **Daemon**: if RPC unsupported, falls back to direct store.
+
+**Error handling differences**:
+- **Daemon mode** returns RPC errors verbatim; unknown ops trigger direct fallback.
+- **Direct mode** returns storage errors; CLI wraps with `FatalErrorRespectJSON`
+  to emit JSON error objects when `--json` is active.
+
+#### label
+
+**Add / remove**:
+- Batch operations: `label add <issue...> <label>`, `label remove <issue...> <label>`.
+- Partial IDs are resolved first (daemon or direct).
+- `provides:*` labels are **reserved**; only `bd ship` may add them.
+- **Daemon**: RPC `AddLabel` / `RemoveLabel`.
+- **Direct**: `AddLabel` / `RemoveLabel` + mark dirty for auto-flush.
+
+**List**:
+- `label list <issue>` returns labels for a single issue.
+- `label list-all` aggregates unique labels with counts.
+
+**Error handling differences**:
+- In daemon mode, label list relies on RPC `Show` and reads labels from response.
+- Direct mode queries label tables and returns missing labels as empty list.
+- JSON output is always an array (labels or `{label,count}` objects).
+
+---
+
+### 15.46 Doctor / Integrity Checks (Classic Subset)
+
+**Port decision (v1, non-invasive)**:
+- Keep **read-only diagnostics** that help detect corruption or drift.
+- **Do NOT** port any auto-fix behaviors that delete, rename, or modify git state.
+- Suggested recovery steps may be printed, but must be **explicit user actions**.
+
+**JSONL integrity**:
+- Locates JSONL via `metadata.json` (configfile JSONLExport) or best-effort discovery.
+- Scans line-by-line; malformed JSON or missing `id` is counted and reported.
+- If malformed and DB exists: warning/error with guidance to regenerate JSONL.
+- If malformed and DB missing: error with guidance to restore JSONL from git/backups.
+
+**Schema compatibility**:
+- Opens DB read-only and probes critical tables/columns:
+  - `issues`, `dependencies`, `child_counters`, `export_hashes`.
+- Missing tables/columns → error with migration guidance.
+
+**Database integrity (SQLite PRAGMA)**:
+- Runs `PRAGMA integrity_check` on DB.
+- “ok” → pass; any other result → corruption warning.
+- If JSONL is present, suggests recovery via import/export (no auto-fix).
+
+**DB ↔ JSONL sync check**:
+- Counts issues in DB and JSONL and compares.
+- Detects prefix mismatch (majority-prefix rule; allows `-mol/-wisp/-eph` variants).
+- Detects status mismatches when counts match (DB vs JSONL).
+- Uses file mtime as a secondary stale signal (warn if JSONL much newer).
+
+**Orphaned dependencies** (classic validation):
+- SQL join to detect dependencies whose `depends_on_id` does not exist in `issues`.
+- Report count + sample list.
+- **No auto-removal in v1**; recommend manual cleanup or explicit repair command.
+
+**Merge artifacts**:
+- Scans `.beads/` for merge temp files (`*.base.jsonl`, `*.left.jsonl`, etc.).
+- Reports and suggests manual cleanup.
+
+**Excluded in v1**:
+- `doctor --fix` automation (JSONL regeneration, pruning, dependency cleanup).
+- Git operations (hook fixes, sync-branch resets, branch manipulations).
+- Any destructive recovery that renames or deletes files.
+
+---
+
+### 15.47 Create / Update / Close / Reopen (Mutation Semantics)
+
+This section documents the CLI-visible semantics for classic issue mutation commands.
+Gastown-only flags and types are noted but excluded from the Rust port (see Port Notes).
+
+#### 15.47.1 create
+
+**Invocation**:
+- `bd create <title>` or `bd create --title <title>` (positional and flag must match if both present).
+- `bd create --file <markdown>` creates multiple issues parsed from a Markdown file.
+  - `--dry-run` is not supported with `--file`.
+
+**Defaults & validation**:
+- Default `type`: `task` (flag default).
+- Default `priority`: `2` (P2).
+- Status is always `open` on create.
+- `create.require-description` in `config.yaml` may enforce description.
+  - If missing description and not forced, emits warning unless `--silent`.
+- `--priority` accepts `0-4` or `P0-P4` (P0 is highest).
+- `--type` validates against built-in types (plus custom types if configured).
+
+**IDs & hierarchy**:
+- `--id` sets explicit ID; `--parent` cannot be used simultaneously.
+- If `--parent` is provided in direct mode, child ID is generated by
+  `GetNextChildID(parent)`, yielding hierarchical IDs (`bd-abc.1`, `bd-abc.2`, ...).
+- Explicit IDs are validated:
+  - Prefix format and length
+  - Prefix must match `issue_prefix` or `allowed_prefixes` unless `--force`
+  - Agent IDs (if `--type=agent`) have additional validation (Gastown-only).
+
+**Dependencies & labels**:
+- `--deps` supports `type:id` or `id` (default type `blocks`).
+- `--waits-for` and `--waits-for-gate` attach a waits-for dependency with metadata.
+- `--parent` also creates a `parent-child` dependency after create.
+- Labels are added after creation; failures are warnings, not fatal.
+
+**Routing flags (classic + Gastown)**:
+- `--repo` bypasses auto-routing and creates in that repo (direct mode only).
+- `--rig` / `--prefix` route to a different rig via `routes.jsonl` (Gastown).
+  - See §15.54 for details.
+
+**Output**:
+- `--json`: prints the created issue object (full Issue schema).
+- `--silent`: prints only the ID (no extra text).
+- Default: human-readable summary:
+  - `Created issue: <id>`
+  - `Title`, `Priority`, `Status` lines.
+
+#### 15.47.2 update
+
+**Invocation**:
+- `bd update <id...>` updates one or more issues.
+- If no ID is provided, uses `last_touched` (most recent create/update/show/close).
+
+**Field updates**:
+- Supports updates to `status`, `priority`, `title`, `description`, `design`,
+  `acceptance_criteria`, `notes`, `assignee`, `external_ref`, `estimate`, `type`.
+- Label operations:
+  - `--add-label`, `--remove-label`, `--set-labels`.
+- Parent reparenting via `--parent`.
+- `--due` / `--defer` accept relative or absolute time parsing and can be cleared.
+
+**Claim behavior**:
+- `--claim` performs an atomic claim:
+  - Fails if already assigned
+  - Sets `assignee = actor` and `status = in_progress`.
+
+**Status close shortcut**:
+- If status set to `closed`, include `closed_by_session` if
+  `--session` or `CLAUDE_SESSION_ID` is available.
+
+**Output**:
+- `--json`: array of updated Issue objects (one per ID updated).
+- Human: per-issue confirmation or warnings.
+
+#### 15.47.3 close
+
+**Invocation**:
+- `bd close <id...>` or closes `last_touched` if no ID supplied.
+
+**Core behavior**:
+- Validates closability (pinned requires `--force`).
+- Blocks closure if issue is blocked by open blockers (unless `--force`).
+- Sets status to `closed`, `closed_at`, and `close_reason` (from `--reason`).
+
+**Special modes**:
+- `--suggest-next`: includes newly unblocked issues (direct mode only).
+- `--continue`: in molecule workflows, auto-advance to next step (Gastown).
+
+**Output**:
+- `--json` default: array of closed issues.
+- If `--suggest-next`: JSON object `{ "closed": [...], "unblocked": [...] }`.
+- If `--continue`: JSON object `{ "closed": [...], "continue": { ... } }`.
+- Human output: `Closed <id>: <reason>` per issue.
+
+#### 15.47.4 reopen
+
+**Behavior**:
+- Explicit command to reopen closed issues (sets `status=open` and clears `closed_at`).
+- Adds an optional comment if `--reason` is provided.
+- Uses `ResolvePartialID` in direct mode, RPC in daemon mode.
+
+**Output**:
+- `--json`: array of reopened Issue objects.
+- Human: `Reopened <id>` with optional `: <reason>`.
+
+**Port notes (non-invasive)**:
+- `br` should preserve the above semantics for classic use.
+- Gastown-only flags (mol, agent, gate, rig, convoy) are excluded from v1.
+
+---
+
+### 15.48 Import / Export (JSONL)
+
+#### 15.48.1 import
+
+**Input**:
+- Reads JSONL from stdin or `-i <file>`.
+- Rejects positional arguments with a helpful hint.
+
+**Direct-mode only**:
+- Import bypasses daemon; uses direct SQLite connection.
+
+**Conflict handling**:
+- Detects git conflict markers in JSONL and attempts automatic 3-way merge.
+- On merge success, restarts import from merged file.
+
+**Initialization**:
+- If DB exists but `issue_prefix` missing, detects prefix from JSONL.
+- Falls back to directory name if JSONL has no detectable prefix.
+
+**Collision and prefix mismatch**:
+- Prefix mismatches produce a detailed report; can be fixed with:
+  - `--rename-on-import` (remap IDs to DB prefix)
+  - or later `bd rename-prefix`.
+- Collisions (same ID, different content) abort with report.
+
+**Flags (classic)**:
+- `--skip-existing`: create-only (do not update existing).
+- `--strict`: fail on any errors in dependencies/labels.
+- `--rename-on-import`: rename imported IDs to configured prefix.
+- `--orphan-handling`: `strict|resurrect|skip|allow`.
+- `--clear-duplicate-external-refs`: clears duplicates rather than error.
+- `--dedupe-after`: post-import duplicate detection summary.
+- `--dry-run`: preview counts, do not write.
+- `--force`: update import metadata even if no changes.
+
+**Output**:
+- No structured JSON output (even when `--json` is set).
+- Human output goes to stderr.
+- Summary includes counts: created, updated, unchanged, skipped, remapped.
+
+#### 15.48.2 export
+
+**Formats**:
+- `jsonl` (default): one JSON object per line.
+- `obsidian`: Markdown task format (default output `ai_docs/changes-log.md`).
+
+**Filters**:
+- `--status`, `--assignee`, `--type`, `--label`, `--label-any`.
+- `--priority`, `--priority-min`, `--priority-max`.
+- `--created-*`, `--updated-*` date filters.
+
+**Tombstones and wisps**:
+- Tombstones included by default (if no status filter), to propagate deletes.
+- Ephemeral/wisp issues are always excluded from JSONL export.
+
+**Safety checks**:
+- Refuses to export if DB has fewer issues than existing JSONL (staleness guard).
+- Can override with `--force`.
+
+**Output**:
+- JSONL writes to stdout or file; order is sorted by ID.
+- If `--json` is set: outputs a stats object to stderr, not stdout:
+  - `{ success, exported, skipped, total_issues, output_file? }`.
+
+---
+
+### 15.49 Sync / Flush / Auto-Flush (Classic vs Non-Invasive Port)
+
+**Legacy behavior**:
+- `bd sync` performs git pull/merge, 3-way merge, export, commit, push.
+- `--flush-only` exports pending changes to JSONL (no git operations).
+- `--import-only` imports from JSONL (no git operations).
+- Auto-flush manager debounces writes and exports JSONL after changes.
+- Auto-import triggers when JSONL content hash differs from DB metadata.
+
+**Classic port intent (br)**:
+- Keep explicit `export` and `import` commands.
+- Keep an explicit `sync --flush-only` alias for export (no git operations).
+- Drop automatic git operations, pull/push, auto-commit, and sync-branch.
+- Disable by default any auto-import/auto-flush that changes files without
+  explicit user action (must be opt-in if retained at all).
+
+---
+
+### 15.50 Maintenance Commands (classic subset)
+
+#### 15.50.1 cleanup
+
+**Purpose**:
+- Convert closed issues to tombstones and prune expired tombstones.
+
+**Safety**:
+- Requires `--force` unless `--dry-run`.
+- `--hard` bypasses tombstone TTL safety (prunes immediately).
+- `--cascade` deletes dependents recursively.
+- `--older-than N` restricts to issues closed before cutoff.
+- `--ephemeral` targets only closed wisps.
+
+**JSON output**:
+- Empty case: `{ deleted_count, message, filter?, ephemeral? }`.
+- Otherwise uses delete batch JSON shape:
+  `{ deleted, deleted_count, dependencies_removed, labels_removed,
+     events_removed, references_updated, orphaned_issues }`.
+
+#### 15.50.2 compact
+
+**Modes**:
+- `--prune`: age-based tombstone pruning.
+- `--purge-tombstones`: dependency-aware pruning.
+- `--analyze` / `--apply`: offline compaction workflow (no API key).
+- `--auto`: AI compaction (requires API key; legacy).
+- `--stats`: show compaction statistics.
+
+**Port decision**:
+- `br` v1 should exclude AI compaction and any remote API dependency.
+- `prune`/`purge` may be kept as explicit maintenance commands only.
+
+#### 15.50.3 migrate
+
+**Default behavior**:
+- Detects `.beads/*.db`, migrates or renames to configured DB name.
+- Updates schema version metadata; can remove stale DBs with confirmation.
+
+**Subcommands**:
+- `hash-ids`, `issues`, `sync`, `tombstones` (legacy, often Gastown-related).
+
+**Port decision**:
+- `br` v1 keeps schema migration only (forward-compatible upgrades).
+- Drop multi-repo sync-branch, hash-ids, and other Gastown-specific migrations.
+
+---
+
+### 15.51 Duplicates / Dedupe Workflows
+
+**Command**: `bd duplicates`
+
+**Grouping logic**:
+- Groups open issues by content key: `{title, description, design, acceptance_criteria, status}`.
+- Closed issues are excluded from grouping.
+
+**Merge target selection**:
+1. Highest dependent count (most referenced by other issues).
+2. Highest text reference count (mentions in descriptions/notes).
+3. Lexicographically smallest ID (tie-breaker).
+
+**Output (JSON)**:
+```
+{
+  "duplicate_groups": <int>,
+  "groups": [
+    {
+      "title": "...",
+      "issues": [
+        {"id": "bd-1", "title": "...", "status": "open", "priority": 2,
+         "references": 3, "dependents": 1, "is_merge_target": true}
+      ],
+      "suggested_target": "bd-1",
+      "suggested_sources": ["bd-2"],
+      "suggested_action": "bd close ... && bd dep add ... --type related",
+      "note": "Duplicate: ..."
+    }
+  ],
+  "merge_commands": ["..."]?,
+  "merge_results": [ {"target":..., "sources":..., "closed":..., "linked":..., "errors":...} ]?
+}
+```
+
+**Auto-merge**:
+- `--auto-merge` closes sources and adds `related` deps to target.
+- `--dry-run` prints merge commands without applying.
+
+---
+
+### 15.52 Orphans Command
+
+**Definition**: issues referenced in git commits but still open/in_progress.
+
+**Detection**:
+- Runs `git log --oneline --all` and extracts IDs like `(bd-abc123)`.
+- Filters to open/in_progress issues in DB.
+
+**Output (JSON)**:
+```
+[
+  {"issue_id": "bd-123", "title": "...", "status": "open",
+   "latest_commit": "abc123", "latest_commit_message": "..."}
+]
+```
+
+**Flags**:
+- `--details`: include latest commit hash/message in human output.
+- `--fix`: interactive confirmation, then runs `bd close <id>` per orphan.
+
+---
+
+### 15.53 ID Resolution, Prefix Semantics, and Rename
+
+**Partial ID resolution** (`ResolvePartialID`):
+- Accepts:
+  - Full ID (`bd-abc123`)
+  - Hash only (`abc123`)
+  - Prefix without hyphen (`bdabc123`)
+  - Hierarchical (`bd-abc123.1`)
+- Resolution order:
+  1. Exact ID match (SearchIssues w/ IDs filter).
+  2. Normalize by prefix (configured `issue_prefix`) and retry exact match.
+  3. Substring match against issue hash portion across all prefixes.
+- Ambiguous matches produce an error listing candidate IDs.
+
+**Prefix validation**:
+- Explicit IDs must match `issue_prefix` or `allowed_prefixes`.
+- `allowed_prefixes` is a comma-separated config value used for multi-prefix
+  environments (Gastown).
+
+**rename-prefix**:
+- Validates new prefix (letters/numbers/hyphen, max length 8, trailing hyphen required).
+- Detects multi-prefix corruption; requires `--repair` to consolidate.
+- Updates IDs and all text references.
+- Re-exports JSONL and resets metadata hashes.
+- `--dry-run` prints sample mappings.
+
+**Port note**:
+- `br` v1 should keep partial ID resolution and strict prefix validation
+  but may defer rename-prefix until after core commands stabilize.
+
+---
+
+### 15.54 Creation Routing and Cross-Repo Targets
+
+**Auto routing**:
+- `routing.mode = auto` uses user role detection:
+  - Maintainer -> `routing.maintainer`
+  - Contributor -> `routing.contributor`
+- Falls back to `routing.default` or `.`.
+- Legacy keys: `contributor.auto_route`, `contributor.planning_repo`.
+
+**Explicit routing**:
+- `--repo` overrides auto routing.
+- Creates in target repo using direct mode and storage factory.
+
+**Rig / prefix routing (Gastown)**:
+- `--rig` or `--prefix` uses `routes.jsonl` at town root.
+- Accepts rig name (`beads`), prefix with hyphen (`bd-`), or prefix without hyphen (`bd`).
+- Resolves `.beads` directory for target rig and uses `PrefixOverride` for ID generation.
+
+**Port decision**:
+- `br` v1 keeps `--repo` as an explicit target option.
+- `--rig` / `--prefix` routing (Gastown) is excluded from classic port.
+
+---
+
+### 15.55 Status / Type / Priority Customization
+
+**Built-in statuses**: `open`, `in_progress`, `blocked`, `deferred`, `closed`, `tombstone`.
+
+**Custom statuses**:
+- Config key: `status.custom` (comma-separated), stored in DB config.
+- Validated by `Status.IsValidWithCustom`.
+
+**Built-in types (classic)**: `bug`, `feature`, `task`, `epic`, `chore`.
+
+**Custom types**:
+- Config key: `types.custom` (comma-separated), stored in DB config.
+- Validated by `IssueType.IsValidWithCustom`.
+
+**Priority**:
+- Fixed range `0..4` (no custom ranges in classic).
+
+**Port note**:
+- `br` v1 keeps custom statuses and types.
+- Gastown-only built-in types (agent/rig/gate/etc.) excluded.
+
+---
+
+### 15.56 Error Output and Exit Conventions
+
+**Exit codes**:
+- Success: `0`
+- Fatal errors: `1`
+
+**JSON error shape**:
+- `FatalErrorRespectJSON` outputs `{ "error": "..." }` to stdout when `--json`.
+- `outputJSONError` (auto-flush) outputs `{ "error": "...", "code"?: "..." }` to stderr.
+
+**Stdout vs stderr**:
+- Human-readable errors/warnings generally go to stderr.
+- `--json` outputs are usually stdout, except:
+  - `export --json` writes stats JSON to stderr to keep stdout for JSONL.
+  - `import` ignores `--json` and writes human output to stderr.
+
+**Port note**:
+- `br` should keep this separation to avoid corrupting JSONL / JSON output.
+
+---
+
+### 15.57 No-DB Mode (`--no-db`)
+
+**Purpose**: operate from JSONL without SQLite (memory-only).
+
+**Initialization**:
+- Locates `.beads/` (or `BEADS_DIR`).
+- Reads `issues.jsonl` if present; otherwise starts empty.
+- Detects prefix in order:
+  1. `issue-prefix` in `config.yaml`
+  2. Common prefix across all issues (must be consistent)
+  3. Directory name fallback
+- Mixed prefixes -> error (must set config explicitly).
+
+**Runtime**:
+- Uses in-memory storage for all operations.
+- No daemon, no auto-import, no SQLite-specific features.
+
+**Persistence**:
+- At command exit, writes `issues.jsonl` atomically.
+- Filters out ephemeral/wisp issues.
+
+**Port note**:
+- `br` should keep `--no-db` but limit features to safe read/write of JSONL.
+
 ---
 
 ## Appendix B: SQLite Connection String
@@ -3866,4 +5441,4 @@ Complete example of `.beads/issues.jsonl`:
 
 *Document generated for beads_rust porting project.*
 *This is the authoritative specification - consult this instead of Go source files.*
-*Last updated: 2026-01-15*
+*Last updated: 2026-01-16*
