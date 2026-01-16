@@ -38,6 +38,8 @@ Update it as soon as new work is discovered or completed.
 - [x] Documented **auto-import / auto-flush edge cases** (hash metadata, last_import_time, cold-start prefix, debounce).
 - [x] Documented **delete/tombstone workflow** (single vs batch, actor/reason, reference rewriting, hard-delete pruning).
 - [x] Added **non-classic CLI command flag matrix** with explicit exclusion notes.
+- [x] Documented **lint, markdown bulk create, info, version, and template commands** with JSON schemas.
+- [x] Documented **graph/where/quick/prime/help/preflight commands** with port notes.
 
 ### Follow-up deep dives (keep expanding)
 
@@ -55,7 +57,6 @@ Update it as soon as new work is discovered or completed.
   - [ ] Verify tombstone pruning rules (age vs dependency-driven purge).
 - [ ] **Hierarchy + templates + epics:**
   - [ ] `epic` command behavior and flags (if distinct from core CRUD).
-  - [ ] `template`/`formula`/`graph` commands (deprecated or Gastown-bound).
 - [ ] **Integrations + automation (explicitly excluded):**
   - [ ] `hooks`, `daemon`, `gate`, `mol`, `agent`, `swarm`, `linear`, `jira`, `mail`.
   - [ ] Document their JSON outputs for exclusion clarity.
@@ -6292,6 +6293,349 @@ This command is **deprecated** and slated for removal upstream.
 - This is **deprecated upstream** and intertwined with formula/mol systems.
 - Recommendation for `br` v1: **exclude** unless explicitly requested; if included,
   keep it label-based only (no mol/wisp/daemon).
+
+---
+
+### 15.76 Graph Command (`bd graph`)
+
+`bd graph` renders a dependency visualization for a single issue or all open issues.
+It is **read-only** and requires direct DB access (daemon support is partial).
+
+**CLI**:
+- `bd graph <issue-id>`: render graph for a single issue subgraph.
+- `bd graph --all`: render all open issues grouped by connected components.
+- Flags:
+  - `--compact`: tree format (one line per issue).
+  - `--box`: ASCII box layout (default). **Flag exists but is effectively unused**; box is default.
+  - `--json`: JSON output.
+
+**Subgraph semantics (single issue)**:
+- Root issue resolved via partial ID.
+- **Traversal uses dependents only** (issues that depend on root or its descendants).
+  - This is effectively a **reverse-dependency** view.
+  - Direct dependencies of the root are **not** added (explicitly skipped in code).
+- All dependency types are loaded **within** the subgraph for rendering, but
+  layout uses only `blocks` edges.
+
+**`--all` mode**:
+- Includes issues with status `open`, `in_progress`, and `blocked`.
+- Builds connected components using **all** dependency edges between those issues.
+- Component sort:
+  - First by size (desc), then by priority of the first issue (asc).
+- Root selection within each component:
+  - Prefer epics; otherwise highest priority (lowest number).
+
+**Layout algorithm**:
+- Considers only `blocks` edges.
+- Assigns layers by longest path from sources:
+  - Layer 0 = no blocking dependencies.
+  - Each node layer = max(dep layer) + 1.
+- Cycles/unassigned nodes fall back to layer 0.
+- Nodes within a layer are sorted by ID.
+
+**JSON output shape**:
+```json
+{
+  "root": { /* Issue */ },
+  "issues": [ /* Issue */ ],
+  "layout": {
+    "Nodes": {
+      "bd-abc": { "Issue": { /* Issue */ }, "Layer": 0, "Position": 0, "DependsOn": ["bd-def"] }
+    },
+    "Layers": [["bd-abc","bd-def"]],
+    "MaxLayer": 2,
+    "RootID": "bd-abc"
+  }
+}
+```
+Notes:
+- Struct fields are **capitalized** in JSON (no tags in Go).
+- In `--all`, output is a **list** of subgraph objects.
+
+**Human output (box)**:
+- Header: `📊 Dependency graph for <root-id>`.
+- Legend: status icons (`○` open, `◐` in_progress, `●` blocked, `✓` closed).
+- Per-layer sections: `Layer N (ready)` for layer 0.
+- Each node rendered as an ASCII box with:
+  - Status icon + truncated title (max 30 chars),
+  - Muted ID line,
+  - Optional `blocks:X` / `needs:Y` line (counts exclude root as blocker).
+- Summary: `Dependencies: <n> blocking relationships` and `Total: <n> issues across <m> layers`.
+
+**Human output (compact)**:
+- Header: `📊 Dependency graph for <root-id> (<n> issues, <m> layers)`.
+- Legend includes `❄ deferred`.
+- Per-layer headers: `LAYER N (ready)`.
+- One line per issue: `<icon> <id> <priority-tag> <title>` (title max 50 chars).
+- Child rendering uses **parent-child** dependencies only, sorted by priority then ID.
+
+**Port note (non-invasive)**:
+- `br` can keep `graph` as read-only visualization.
+- Preserve the **reverse-dependency** traversal semantics to match `bd`.
+
+---
+
+### 15.77 Where Command (`bd where`)
+
+Reports the active `.beads` location, including redirects and prefix detection.
+
+**Behavior**:
+- Finds the active beads directory (follows redirects).
+- If no beads dir found:
+  - Human: prints error + hint to run `bd init`, exits **1**.
+  - JSON: prints `{ "error": "no beads directory found" }`, exits **1**.
+- Detects redirect origin by walking up from CWD for a `.beads/redirect` file
+  (or by `BEADS_DIR` env override).
+- Detects prefix:
+  - First from DB config `issue_prefix` (if store available).
+  - Otherwise, extracts prefix from first JSONL line ID.
+
+**JSON output shape**:
+```json
+{
+  "path": "/abs/path/.beads",
+  "redirected_from": "/abs/other/.beads",
+  "prefix": "bd",
+  "database_path": "/abs/path/.beads/beads.db"
+}
+```
+
+**Human output**:
+```
+/abs/path/.beads
+  (via redirect from /abs/other/.beads)
+  prefix: bd
+  database: /abs/path/.beads/beads.db
+```
+
+**Port note**:
+- Keep for debugging redirects and multi-clone setups.
+
+---
+
+### 15.78 Quick Capture (`bd q`)
+
+Creates an issue and outputs **only the ID** (no JSON; always one line).
+
+**CLI**:
+- `bd q <title...>`
+- Flags:
+  - `--priority, -p` default `2`
+  - `--type, -t` default `task`
+  - `--labels, -l` repeatable list
+
+**Behavior**:
+- Title is a joined string of args.
+- Uses daemon RPC if available; otherwise direct DB.
+- Adds labels best-effort (direct mode ignores label errors).
+- Schedules auto-flush (direct mode).
+- Output: `bd-abc123` to stdout only.
+
+**Port note**:
+- Keep in `br` v1 for agent scripting.
+- Respect `--json`? Legacy ignores it; match behavior.
+
+---
+
+### 15.79 Prime Command (`bd prime`)
+
+Outputs **AI workflow context** as markdown. Designed for agent hooks and
+context recovery. It is **pure output**, no DB writes.
+
+**Key behaviors**:
+- If no beads dir found: exits **0** silently (no stderr) for hook safety.
+- Supports `.beads/PRIME.md` override:
+  - Uses local `.beads/PRIME.md` first; falls back to redirected beads dir.
+  - `--export` ignores overrides and prints default content.
+- Detects MCP mode by inspecting `~/.claude/settings.json` and checking for
+  `mcpServers` keys containing `"beads"`.
+- `--full` and `--mcp` force output mode.
+- `--stealth` or config `no-git-ops=true` suppress git commands in the protocol.
+
+**Output modes**:
+- **MCP mode**: minimal reminder text (≈50 tokens), includes a close protocol line.
+- **CLI mode**: full markdown guide with:
+  - session close checklist,
+  - core rules,
+  - essential commands,
+  - sync guidance (adjusted for auto-sync, no-push, ephemeral branches).
+
+**Close protocol selection**:
+- Depends on:
+  - daemon auto-sync detection (auto-commit + auto-push),
+  - `no-push` config,
+  - git remote existence,
+  - whether current branch has upstream (ephemeral).
+- Outputs different session-end steps accordingly (sync vs no sync vs local-only).
+
+**Port note (non-invasive)**:
+- `bd prime` is highly git-opinionated. For `br` v1, either **omit**
+  or provide a simplified, **non-git** version.
+
+---
+
+### 15.80 Quickstart and Human Help
+
+Two human-facing help commands with **static text** output only:
+
+- `bd quickstart`: a long-form, example-driven getting started guide.
+- `bd human`: curated list of core commands for non-agent users.
+
+**Port note**:
+- Optional for `br`; safe to omit or re-author in Rust-specific style.
+
+---
+
+### 15.81 Preflight Command (`bd preflight`)
+
+PR readiness checklist for the **Go** beads repo (tests, lint, nix hash).
+
+**Modes**:
+- Default: prints a static checklist.
+- `--check`: runs checks and returns pass/fail summary.
+- `--json`: JSON output only (overrides global `--json`).
+
+**JSON output shape**:
+```json
+{
+  "checks": [
+    {
+      "name": "Tests pass",
+      "passed": true,
+      "skipped": false,
+      "warning": false,
+      "output": "",
+      "command": "go test -short ./..."
+    }
+  ],
+  "passed": true,
+  "summary": "3/4 checks passed (1 skipped)"
+}
+```
+
+**Port note (non-invasive)**:
+- This is **Go-repo specific**; exclude from `br` v1 unless rewritten for Rust.
+
+---
+
+### 15.82 Non-Classic CLI Flag Matrix (Excluded / Optional for br v1)
+
+This matrix captures **non-classic** commands and their flags so the Rust port can
+explicitly exclude (or later opt-in) with eyes open. Where a command is partially
+retained (e.g., `sync`), the exclusion note clarifies the supported subset.
+
+#### 15.82.1 Daemon + Daemon Management (Excluded)
+
+| Command | Flags | Exclusion Note |
+|---|---|---|
+| `daemon` (legacy umbrella) | `--start`, `--stop`, `--stop-all`, `--status`, `--health`, `--metrics`, `--interval`, `--auto-commit`, `--auto-push`, `--auto-pull`, `--local`, `--log`, `--foreground`, `--log-level`, `--log-json`, `--json` | Deprecated wrapper; daemon not supported |
+| `daemon start` | `--interval`, `--auto-commit`, `--auto-push`, `--auto-pull`, `--local`, `--log`, `--foreground`, `--log-level`, `--log-json` | Excluded |
+| `daemon status` | `--all`, `--search` | Excluded |
+| `daemon list` | `--search`, `--no-cleanup` | Alias of `daemons list`; excluded |
+| `daemon health` | `--search` | Excluded |
+| `daemon logs` | `--follow`, `--lines` | Excluded |
+| `daemon stop` | (none) | Excluded |
+| `daemon killall` | `--search`, `--force` | Excluded |
+| `daemon restart` | `--search` | Excluded |
+| `daemons` (alias) | Same subcommands as `daemon` | Alias only |
+
+#### 15.82.2 Git / Repo Automation (Excluded or Partial)
+
+| Command | Flags | Exclusion Note |
+|---|---|---|
+| `sync` | `--message`, `--dry-run`, `--no-push`, `--no-pull`, `--rename-on-import`, `--flush-only`, `--import-only`, `--status`, `--merge`, `--from-main`, `--no-git-history`, `--squash`, `--check`, `--accept-rebase`, `--json` | `br` keeps only `--flush-only` / `--import-only` (no git ops) |
+| `merge` | `--debug` | Merge-driver helper excluded |
+| `resolve-conflicts` | `--mode`, `--dry-run`, `--json`, `--path` | Excluded |
+| `worktree create` | `--branch` | Excluded |
+| `worktree remove` | `--force` | Excluded |
+| `worktree list/info` | (none) | Excluded |
+| `repo add/remove/list/sync` | `--json` | Excluded |
+| `move` | `--to`, `--keep-open`, `--skip-deps` | Excluded |
+| `refile` | `--keep-open` | Excluded |
+| `rename-prefix` | `--dry-run`, `--repair` | Excluded |
+| `reset` | `--force` | Excluded (destructive) |
+| `preflight` | `--check`, `--fix`, `--json` | Excluded (Go-repo specific) |
+
+#### 15.82.3 Maintenance / Diagnostics (Excluded unless explicitly requested)
+
+| Command | Flags | Exclusion Note |
+|---|---|---|
+| `admin` | (none) | Group for maintenance aliases |
+| `cleanup` | `--force`, `--dry-run`, `--cascade`, `--older-than`, `--hard`, `--ephemeral` | Excluded |
+| `compact` | `--dry-run`, `--tier`, `--all`, `--id`, `--force`, `--batch-size`, `--workers`, `--stats`, `--json`, `--analyze`, `--apply`, `--auto`, `--prune`, `--older-than`, `--purge-tombstones`, `--summary`, `--actor`, `--limit` | Excluded |
+| `doctor` | `--fix`, `--yes`, `--interactive`, `--dry-run`, `--fix-child-parent`, `--verbose`, `--force`, `--source`, `--perf`, `--check-health`, `--output`, `--check`, `--clean`, `--deep` | Excluded |
+| `repair` | `--dry-run`, `--path`, `--json` | Excluded |
+| `detect-pollution` | `--clean`, `--yes` | Excluded |
+| `duplicates` | `--auto-merge`, `--dry-run` | Excluded |
+| `duplicate` | `--of` | Excluded |
+| `supersede` | `--with` | Excluded |
+| `orphans` | `--fix`, `--details` | Excluded |
+| `lint` | `--type`, `--status` | Optional |
+| `activity` | `--follow`, `--mol`, `--since`, `--type`, `--limit`, `--interval`, `--town` | Excluded |
+| `audit record` | `--kind`, `--model`, `--prompt`, `--response`, `--issue-id`, `--tool-name`, `--exit-code`, `--error`, `--stdin` | Excluded |
+| `audit label` | `--label`, `--reason` | Excluded |
+| `restore` | `--json` | Excluded |
+
+#### 15.82.4 Gastown / Agent Workflow (Excluded)
+
+| Command | Flags | Exclusion Note |
+|---|---|---|
+| `agent backfill-labels` | `--dry-run` | Excluded |
+| `agent state/heartbeat/show` | (none) | Excluded |
+| `gate list` | `--all`, `--limit` | Excluded |
+| `gate resolve` | `--reason` | Excluded |
+| `gate check` | `--type`, `--dry-run`, `--escalate`, `--limit` | Excluded |
+| `gate discover` | `--dry-run`, `--branch`, `--limit`, `--max-age` | Excluded |
+| `mol bond` | `--type`, `--as`, `--dry-run`, `--var`, `--ephemeral`, `--pour`, `--ref` | Excluded |
+| `mol burn` | `--dry-run`, `--force` | Excluded |
+| `mol current` | `--for`, `--limit`, `--range` | Excluded |
+| `mol distill` | `--var`, `--dry-run`, `--output` | Excluded |
+| `mol show` | `--parallel` | Excluded |
+| `mol squash` | `--dry-run`, `--keep-children`, `--summary` | Excluded |
+| `mol stale` | `--blocking`, `--unassigned`, `--all`, `--json` | Excluded |
+| `mol progress / ready-gated` | (none) | Excluded |
+| `swarm validate` | `--verbose` | Excluded |
+| `swarm create` | `--coordinator`, `--force` | Excluded |
+| `ship` | `--force`, `--dry-run` | Excluded |
+| `pour` | `--var`, `--dry-run`, `--assignee`, `--attach`, `--attach-type` | Excluded |
+| `cook` | `--dry-run`, `--persist`, `--force`, `--search-path`, `--prefix`, `--var`, `--mode` | Excluded |
+| `slot` | (none) | Excluded |
+| `merge-slot acquire` | `--holder`, `--wait` | Excluded |
+| `merge-slot release` | `--holder` | Excluded |
+| `formula list` | `--type` | Excluded |
+| `formula convert` | `--all`, `--delete`, `--stdout` | Excluded |
+| `template instantiate` | `--var`, `--dry-run`, `--assignee` | Deprecated; exclude |
+| `epic status` | `--eligible-only` | Optional |
+| `epic close-eligible` | `--dry-run` | Optional |
+| `graph` | `--all`, `--compact`, `--box` | Optional |
+
+#### 15.82.5 Integrations & Delegation (Excluded)
+
+| Command | Flags | Exclusion Note |
+|---|---|---|
+| `linear sync` | `--pull`, `--push`, `--dry-run`, `--prefer-local`, `--prefer-linear`, `--create-only`, `--update-refs`, `--state` | Excluded |
+| `jira sync` | `--pull`, `--push`, `--dry-run`, `--prefer-local`, `--prefer-jira`, `--create-only`, `--update-refs`, `--state` | Excluded |
+| `mail` | (none; delegates via config/env) | Excluded |
+| `setup` | `--list`, `--print`, `--output`, `--add`, `--check`, `--remove`, `--project`, `--stealth` | Excluded |
+| `onboard` | (none) | Excluded |
+| `prime` | `--full`, `--mcp`, `--stealth`, `--export` | Excluded |
+
+#### 15.82.6 Meta / Convenience (Optional)
+
+| Command | Flags | Exclusion Note |
+|---|---|---|
+| `info` | `--schema`, `--whats-new`, `--thanks`, `--json` | Optional |
+| `version` | `--daemon` | Optional |
+| `upgrade` | (none; subcommands `status`, `review`, `ack`) | Optional |
+| `thanks` | (none) | Optional |
+| `where` | (none) | Optional |
+| `human` | (none) | Optional |
+| `quick` | `--priority`, `--type`, `--labels` | Optional |
+| `quickstart` | (none) | Optional |
+| `create-form` | (none) | Optional |
+| `edit` | `--title`, `--description`, `--design`, `--notes`, `--acceptance` | Optional |
+| `status` | `--all`, `--assigned`, `--no-activity` | Optional |
+| `state set` | `--reason` | Optional |
 
 ---
 
