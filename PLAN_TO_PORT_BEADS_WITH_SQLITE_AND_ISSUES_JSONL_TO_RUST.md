@@ -66,6 +66,157 @@ Beads is an **agent-first issue tracker** designed for AI coding workflows. Unli
 - On write: SQLite updated → issue marked dirty → JSONL export triggered
 - On pull: JSONL newer than DB → import into SQLite (last-write-wins merge)
 
+---
+
+## Sync Safety (br): Threat Model and Guardrails
+
+This section defines the safety envelope for `br sync`. It exists because a real-world incident class
+showed that a sync tool can accidentally delete all source files by touching the wrong paths or
+performing git operations implicitly. `br` must be **non-invasive by design and enforcement**.
+
+### Incident Class This Plan Prevents
+
+**Observed failure pattern (from another project):**
+- A sync command produced a commit that deleted the entire source tree.
+- Recovery required restoring files from a known-good commit.
+
+**Key lesson:** any sync feature that can touch paths outside `.beads/` or run git commands can
+catastrophically damage the working tree. `br` must *prove* it cannot do that.
+
+### Threat Model
+
+**Threat actors (not malicious, but dangerous):**
+- **User error:** wrong CLI flags, wrong repo root, wrong JSONL path, confusion over env vars.
+- **Configuration drift:** `BEADS_JSONL` or metadata points outside `.beads/`.
+- **Filesystem quirks:** symlinks, path traversal (`..`), absolute paths, or Windows drive roots.
+- **Corrupted inputs:** conflict markers or malformed JSONL.
+- **Runtime failures:** disk full, permission denied, crash mid-write.
+- **Hidden integrations:** implicit git operations, hooks, or daemons.
+
+**Failure modes to eliminate:**
+1. **Path escape:** export/import writes outside `.beads/`.
+2. **Implicit git activity:** any git commit, stage, hook, or config change.
+3. **Partial writes:** export truncates JSONL or import corrupts DB on failure.
+4. **Silent overrides:** data loss without explicit user intent.
+5. **Undetected corruption:** conflict markers or invalid JSONL accepted.
+
+### Non-Goals (Explicit)
+
+`br sync` must **never**:
+- run git commands or modify `.git/`
+- install or trigger git hooks
+- auto-commit or auto-push
+- run a daemon or background process
+
+### Safety Invariants (Testable)
+
+These are the must-hold invariants for every sync operation:
+
+1. **No git operations:** sync code must not execute git or touch `.git/`.
+2. **Strict path allowlist:** sync IO may only target `.beads/` paths and an explicitly
+   opt-in external JSONL path (never by default).
+3. **Atomic export:** export writes to a temp file in the same directory, fsyncs, then atomically
+   renames; existing JSONL is preserved on failure.
+4. **Import safety:** import aborts on conflict markers or invalid JSONL; schema/prefix validation
+   is enforced by default.
+5. **Explicit user intent:** any override or risky operation requires explicit `--force` or
+   opt-in flags.
+6. **Observable decisions:** safety-critical decisions are logged at debug level with
+   sanitized, non-sensitive detail.
+
+### Guardrails and Mitigations (Mapping)
+
+| Failure Mode | Primary Guardrail |
+| --- | --- |
+| Path escape / wrong JSONL path | Canonical path validation + allowlist + opt-in for external paths |
+| Implicit git activity | No git dependencies in sync; hard guard against git invocation |
+| Partial JSONL write | Temp-file write + fsync + atomic rename |
+| Corrupt/merged JSONL | Conflict marker detection + per-line JSON validation |
+| Data loss via override | Explicit `--force` gating + clear warnings |
+| Hidden failure cause | Structured debug logs for each check and decision |
+
+### Safety UX Principles
+
+- **Fail fast, fail safe:** if any safety check fails, do nothing and explain why.
+- **User intent is explicit:** defaults are safe; risks require flags.
+- **Transparency:** provide clear error messages and verbose logging guidance.
+
+### Test Requirements (Enforced by Plan)
+
+Every invariant must be enforced by:
+- **Unit tests** (path guards, conflict detection, atomic write logic)
+- **Integration tests** (no repo file changes, preflight rejection)
+- **E2E scripts** with full log capture and artifacts for postmortems
+
+---
+
+## Sync Safety Spec (Behavior + Test Mapping)
+
+This spec translates the invariants into concrete behavior, flags, and test coverage.
+It is intentionally explicit so implementation and tests do not require external context.
+
+### CLI Semantics (Safe Defaults)
+
+1. **Mode selection is explicit**: `br sync` must require exactly one of:
+   - `--flush-only` (export)
+   - `--import-only` (import)
+2. **External JSONL paths are opt-in only**:
+   - If `BEADS_JSONL` or metadata points outside `.beads/`, require an explicit opt-in flag
+     (e.g., `--allow-external-jsonl`) or fail.
+3. **Risky operations require `--force`**:
+   - Exporting when DB is empty but JSONL is non-empty
+   - Exporting when JSONL appears newer or contains more issues than DB
+   - Importing with prefix mismatch or conflicting metadata
+4. **No implicit git behavior**: `br sync` must never run git commands or touch `.git/`.
+
+### Preflight (Read-Only, Fail-Fast)
+
+Before any write, sync must run a preflight that:
+- Confirms `.beads/` exists and is the active workspace
+- Validates JSONL path via canonicalized allowlist
+- Rejects conflict markers in JSONL for import
+- Validates JSONL readability (per-line JSON)
+- Logs each check at debug level with sanitized paths
+
+If any check fails: **abort with no side effects**.
+
+### Export (Flush) Behavior
+
+- Write to a temp file in the same directory as JSONL
+- fsync temp file, then atomically rename into place
+- Preserve existing JSONL on failure
+- Ensure temp cleanup only touches allowlisted paths
+- Log phases: preflight → write → fsync → rename → finalize
+
+### Import Behavior
+
+- Refuse conflict markers
+- Validate JSONL per line (schema-level)
+- Enforce prefix/metadata compatibility unless `--force`
+- Execute DB writes in a transaction; rollback on error
+- Log phases: preflight → scan → validate → upsert → finalize
+
+### Safety Logging Requirements
+
+All safety-critical decisions must emit debug logs:
+- Path allowlist decisions (allowed/rejected)
+- Preflight check results
+- Guardrail triggers (e.g., stale DB, empty DB)
+- Import/export phases and rollbacks
+
+Logs must avoid sensitive content and include sanitized paths.
+
+### Invariant → Guardrail → Test Mapping
+
+| Invariant | Guardrail | Unit Tests | Integration Tests | E2E Scripts |
+| --- | --- | --- | --- | --- |
+| No git operations | No git deps, hard guard, .git untouched | N/A | Ensure .git unchanged | Verify no commits/staged changes |
+| Strict path allowlist | Canonical path checks, opt-in external | Path traversal cases | Unsafe path preflight rejection | Full repo snapshot diff |
+| Atomic export | Temp + fsync + rename | Export atomicity tests | Failure injection (readonly dir) | Export artifact validation |
+| Import safety | Conflict scan + JSON validation | Conflict marker tests | Reject conflict markers | Import with conflict marker file |
+| Explicit user intent | `--force` gating | Flag parsing tests | Guardrail messaging | Dangerous scenarios require opt-in |
+| Observable decisions | Structured debug logs | Log capture tests | Logs on failure | Logs + artifacts archived |
+
 ### Key Data Model
 
 | Entity | Purpose |
