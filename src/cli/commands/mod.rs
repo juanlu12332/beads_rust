@@ -4,6 +4,7 @@ pub mod delete;
 pub mod doctor;
 pub mod init;
 pub mod list;
+pub mod search;
 pub mod q;
 pub mod show;
 pub mod version;

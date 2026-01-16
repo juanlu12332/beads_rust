@@ -346,6 +346,107 @@ impl SqliteStorage {
         Ok(issues)
     }
 
+
+    /// Search issues by query with optional filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub fn search_issues(&self, query: &str, filters: &ListFilters) -> Result<Vec<Issue>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut sql = String::from(
+            r"SELECT id, content_hash, title, description, design, acceptance_criteria, notes,
+                     status, priority, issue_type, assignee, owner, estimated_minutes,
+                     created_at, created_by, updated_at, closed_at, close_reason, closed_by_session,
+                     due_at, defer_until, external_ref, source_system,
+                     deleted_at, deleted_by, delete_reason, original_type,
+                     compaction_level, compacted_at, compacted_at_commit, original_size,
+                     sender, ephemeral, pinned, is_template
+              FROM issues WHERE 1=1",
+        );
+
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        sql.push_str(" AND (title LIKE ? OR description LIKE ? OR id LIKE ?)");
+        let pattern = format!("%{trimmed}%");
+        params.push(Box::new(pattern.clone()));
+        params.push(Box::new(pattern.clone()));
+        params.push(Box::new(pattern));
+
+        if let Some(ref statuses) = filters.statuses {
+            if !statuses.is_empty() {
+                let placeholders: Vec<String> = statuses.iter().map(|_| "?".to_string()).collect();
+                let _ = write!(sql, " AND status IN ({})", placeholders.join(","));
+                for s in statuses {
+                    params.push(Box::new(s.as_str().to_string()));
+                }
+            }
+        }
+
+        if let Some(ref types) = filters.types {
+            if !types.is_empty() {
+                let placeholders: Vec<String> = types.iter().map(|_| "?".to_string()).collect();
+                let _ = write!(sql, " AND issue_type IN ({})", placeholders.join(","));
+                for t in types {
+                    params.push(Box::new(t.as_str().to_string()));
+                }
+            }
+        }
+
+        if let Some(ref priorities) = filters.priorities {
+            if !priorities.is_empty() {
+                let placeholders: Vec<String> =
+                    priorities.iter().map(|_| "?".to_string()).collect();
+                let _ = write!(sql, " AND priority IN ({})", placeholders.join(","));
+                for p in priorities {
+                    params.push(Box::new(p.0));
+                }
+            }
+        }
+
+        if let Some(ref assignee) = filters.assignee {
+            sql.push_str(" AND assignee = ?");
+            params.push(Box::new(assignee.clone()));
+        }
+
+        if filters.unassigned {
+            sql.push_str(" AND assignee IS NULL");
+        }
+
+        if !filters.include_closed {
+            sql.push_str(" AND status NOT IN ('closed', 'tombstone')");
+        }
+
+        if !filters.include_templates {
+            sql.push_str(" AND (is_template = 0 OR is_template IS NULL)");
+        }
+
+        if let Some(ref title_contains) = filters.title_contains {
+            sql.push_str(" AND title LIKE ?");
+            params.push(Box::new(format!("%{title_contains}%")));
+        }
+
+        sql.push_str(" ORDER BY priority ASC, created_at DESC");
+
+        if let Some(limit) = filters.limit {
+            if limit > 0 {
+                let _ = write!(sql, " LIMIT {limit}");
+            }
+        }
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(AsRef::as_ref).collect();
+        let issues = stmt
+            .query_map(params_refs.as_slice(), |row| self.issue_from_row(row))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(issues)
+    }
+
     /// Count how many dependencies an issue has (issues this one depends on).
     ///
     /// # Errors

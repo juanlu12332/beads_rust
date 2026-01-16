@@ -118,7 +118,7 @@ pub enum Commands {
     Blocked,
 
     /// Search issues
-    Search { query: String },
+    Search(SearchArgs),
 
     /// Manage dependencies
     Dep {
@@ -323,6 +323,16 @@ pub struct ListArgs {
     /// Use tree/pretty output format
     #[arg(long)]
     pub pretty: bool,
+}
+
+/// Arguments for the search command.
+#[derive(Args, Debug, Default)]
+pub struct SearchArgs {
+    /// Search query
+    pub query: String,
+
+    #[command(flatten)]
+    pub filters: ListArgs,
 }
 
 #[derive(Subcommand, Debug)]

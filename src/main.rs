@@ -17,6 +17,7 @@ fn main() {
         Commands::Create(args) => commands::create::execute(args),
         Commands::Delete(args) => commands::delete::execute(&args),
         Commands::List(args) => commands::list::execute(&args, cli.json),
+        Commands::Search(args) => commands::search::execute(&args, cli.json),
         Commands::Count(args) => commands::count::execute(&args, cli.json),
         Commands::Doctor => commands::doctor::execute(cli.json),
         Commands::Version => commands::version::execute(cli.json),
