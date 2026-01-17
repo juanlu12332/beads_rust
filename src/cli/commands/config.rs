@@ -191,10 +191,9 @@ fn get_config_value(
 ) -> Result<()> {
     let layer = if let Some(dir) = beads_dir {
         // Try to open storage for DB config
-        let storage =
-            crate::config::open_storage(dir, overrides.db.as_ref(), overrides.lock_timeout)
-                .ok()
-                .map(|(s, _)| s);
+        let storage = crate::config::open_storage_with_cli(dir, overrides)
+            .ok()
+            .map(|ctx| ctx.storage);
         load_config(dir, storage.as_ref(), overrides)?
     } else {
         // No beads dir, just use env and user configs
@@ -321,8 +320,8 @@ fn delete_config_value(key: &str, json_mode: bool, overrides: &CliOverrides) -> 
     let beads_dir = discover_beads_dir(None)?;
 
     // Open storage
-    let (mut storage, _) =
-        crate::config::open_storage(&beads_dir, overrides.db.as_ref(), overrides.lock_timeout)?;
+    let mut storage_ctx = crate::config::open_storage_with_cli(&beads_dir, overrides)?;
+    let storage = &mut storage_ctx.storage;
 
     // Check if this is a startup-only key (can't be stored in DB)
     if crate::config::is_startup_key(key) {
@@ -382,10 +381,9 @@ fn show_config(
 
     // Show merged config
     let layer = if let Some(dir) = beads_dir {
-        let storage =
-            crate::config::open_storage(dir, overrides.db.as_ref(), overrides.lock_timeout)
-                .ok()
-                .map(|(s, _)| s);
+        let storage = crate::config::open_storage_with_cli(dir, overrides)
+            .ok()
+            .map(|ctx| ctx.storage);
         load_config(dir, storage.as_ref(), overrides)?
     } else {
         let mut layer = ConfigLayer::default();

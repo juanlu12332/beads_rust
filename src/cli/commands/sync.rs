@@ -78,7 +78,9 @@ struct SyncPathPolicy {
 pub fn execute(args: &SyncArgs, json: bool, cli: &config::CliOverrides) -> Result<()> {
     // Open storage
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (mut storage, paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let config::OpenStorageResult {
+        mut storage, paths, ..
+    } = config::open_storage_with_cli(&beads_dir, cli)?;
 
     let jsonl_path = paths.jsonl_path;
     let retention_days = paths.metadata.deletions_retention_days;
