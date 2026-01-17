@@ -11,9 +11,10 @@ use crate::storage::{ListFilters, SqliteStorage};
 use chrono::Utc;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::Command;
-use tracing::{debug, info, warn};
+use std::process::{Command, Stdio};
+use tracing::{debug, info};
 
 /// Summary statistics for the project.
 #[derive(Serialize, Debug)]
@@ -379,7 +380,7 @@ fn compute_recent_activity(beads_dir: &Path, hours: u32) -> Option<RecentActivit
     let repo_root = beads_dir.parent().unwrap_or(beads_dir);
 
     // Get commit count using relative path from repo root
-    let commit_output = Command::new("git")
+    let mut child = Command::new("git")
         .args([
             "log",
             "--oneline",
@@ -389,25 +390,27 @@ fn compute_recent_activity(beads_dir: &Path, hours: u32) -> Option<RecentActivit
             ".beads/issues.jsonl",
         ])
         .current_dir(repo_root)
-        .output();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
 
-    let commit_count = match commit_output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.lines().count()
+    let stdout = child.stdout.take()?;
+    let reader = BufReader::new(stdout);
+    let commit_count = reader.lines().count();
+
+    let status = child.wait().ok()?;
+    if !status.success() {
+        // Log stderr if available
+        if let Some(stderr) = child.stderr {
+            use std::io::Read;
+            let mut err_msg = String::new();
+            if std::io::BufReader::new(stderr).read_to_string(&mut err_msg).is_ok() {
+                 debug!(stderr = %err_msg, "Git log failed");
+            }
         }
-        Ok(output) => {
-            debug!(
-                stderr = %String::from_utf8_lossy(&output.stderr),
-                "Git log failed"
-            );
-            0
-        }
-        Err(e) => {
-            warn!("Failed to run git: {e}");
-            return None;
-        }
-    };
+        return None;
+    }
 
     Some(RecentActivity {
         hours_tracked: hours,
