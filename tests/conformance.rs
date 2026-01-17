@@ -11066,6 +11066,54 @@ fn conformance_q_creates_issue() {
 }
 
 #[test]
+fn conformance_q_id_in_list() {
+    common::init_test_logging();
+    info!("Starting conformance_q_id_in_list test");
+
+    let workspace = ConformanceWorkspace::new();
+    workspace.init_both();
+
+    let br_q = workspace.run_br(["q", "List me"], "q_list");
+    let bd_q = workspace.run_bd(["q", "List me"], "q_list");
+
+    let br_id = br_q.stdout.trim().to_string();
+    let bd_id = bd_q.stdout.trim().to_string();
+
+    let br_list = workspace.run_br(["list", "--json"], "q_list_br");
+    let bd_list = workspace.run_bd(["list", "--json"], "q_list_bd");
+
+    assert!(br_list.status.success(), "br list failed: {}", br_list.stderr);
+    assert!(bd_list.status.success(), "bd list failed: {}", bd_list.stderr);
+
+    let br_val: Value = serde_json::from_str(&extract_json_payload(&br_list.stdout))
+        .unwrap_or(Value::Array(vec![]));
+    let bd_val: Value = serde_json::from_str(&extract_json_payload(&bd_list.stdout))
+        .unwrap_or(Value::Array(vec![]));
+
+    let br_ids: Vec<&str> = br_val
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("id").and_then(|id| id.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let bd_ids: Vec<&str> = bd_val
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("id").and_then(|id| id.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    assert!(br_ids.contains(&br_id.as_str()));
+    assert!(bd_ids.contains(&bd_id.as_str()));
+
+    info!("conformance_q_id_in_list passed");
+}
+
+#[test]
 fn conformance_q_error_no_title() {
     common::init_test_logging();
     info!("Starting conformance_q_error_no_title test");
