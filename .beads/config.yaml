@@ -5,6 +5,7 @@
 
 # Issue prefix for this repository (used by bd init)
 issue_prefix: "beads_rust"
+issue-prefix: "beads_rust"
 
 # Use no-db mode: load from JSONL, no SQLite, write back after each command
 # When true, bd will use .beads/issues.jsonl as the source of truth

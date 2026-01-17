@@ -114,14 +114,14 @@ pub fn execute_with_args(args: &CloseArgs, json: bool, cli: &config::CliOverride
     tracing::info!("Executing close command");
 
     let beads_dir = config::discover_beads_dir(None)?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let actor = config::resolve_actor(&config_layer);
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
-    let all_ids = storage.get_all_ids()?;
+    let all_ids = storage_ctx.storage.get_all_ids()?;
+    let storage = &mut storage_ctx.storage;
 
     // Get IDs - use last touched if none provided
     let mut ids = args.ids.clone();
@@ -318,5 +318,6 @@ pub fn execute_with_args(args: &CloseArgs, json: bool, cli: &config::CliOverride
         }
     }
 
+    storage_ctx.flush_no_db_if_dirty()?;
     Ok(())
 }

@@ -40,6 +40,7 @@ fn main() {
         }
         Commands::Q(args) => commands::q::execute(args, &overrides),
         Commands::Dep { command } => commands::dep::execute(&command, cli.json, &overrides),
+        Commands::Epic { command } => commands::epic::execute(&command, cli.json, &overrides),
         Commands::Label { command } => commands::label::execute(&command, cli.json, &overrides),
         Commands::Count(args) => commands::count::execute(&args, cli.json, &overrides),
         Commands::Stale(args) => commands::stale::execute(&args, cli.json, &overrides),
@@ -51,6 +52,7 @@ fn main() {
         Commands::Sync(args) => commands::sync::execute(&args, cli.json, &overrides),
         Commands::Doctor => commands::doctor::execute(cli.json, &overrides),
         Commands::Version => commands::version::execute(cli.json),
+
         #[cfg(feature = "self_update")]
         Commands::Upgrade(args) => commands::upgrade::execute(&args, cli.json),
         Commands::Completions(args) => commands::completions::execute(&args),
@@ -92,20 +94,24 @@ fn main() {
 
 /// Determine if a command potentially mutates data.
 const fn is_mutating_command(cmd: &Commands) -> bool {
-    matches!(
-        cmd,
+    match cmd {
         Commands::Create(_)
-            | Commands::Update(_)
-            | Commands::Delete(_)
-            | Commands::Close(_)
-            | Commands::Reopen(_)
-            | Commands::Q(_)
-            | Commands::Dep { .. }
-            | Commands::Label { .. }
-            | Commands::Comments(_)
-            | Commands::Defer(_)
-            | Commands::Undefer(_)
-    )
+        | Commands::Update(_)
+        | Commands::Delete(_)
+        | Commands::Close(_)
+        | Commands::Reopen(_)
+        | Commands::Q(_)
+        | Commands::Dep { .. }
+        | Commands::Label { .. }
+        | Commands::Comments(_)
+        | Commands::Defer(_)
+        | Commands::Undefer(_) => true,
+        Commands::Epic { command } => matches!(
+            command,
+            beads_rust::cli::EpicCommands::CloseEligible(args) if !args.dry_run
+        ),
+        _ => false,
+    }
 }
 
 /// Run auto-flush after mutating commands.

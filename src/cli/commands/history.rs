@@ -13,7 +13,7 @@ use std::path::Path;
 /// Returns an error if history operations fail (e.g. IO error, invalid path).
 pub fn execute(args: HistoryArgs, _cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let history_dir = beads_dir.join("history");
+    let history_dir = beads_dir.join(".br_history");
 
     match args.command {
         Some(HistoryCommands::Diff { file }) => diff_backup(&beads_dir, &history_dir, &file),

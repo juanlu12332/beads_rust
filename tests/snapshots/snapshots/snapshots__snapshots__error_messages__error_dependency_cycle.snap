@@ -1,0 +1,15 @@
+---
+source: tests/snapshots/error_messages.rs
+expression: normalize_output(&output.stderr)
+---
+{
+  "error": {
+    "code": "CYCLE_DETECTED",
+    "context": {
+      "cycle_path": "ID-REDACTED -> ID-REDACTED"
+    },
+    "hint": "Remove one dependency to break the cycle",
+    "message": "Cycle detected in dependencies: ID-REDACTED -> ID-REDACTED",
+    "retryable": false
+  }
+}

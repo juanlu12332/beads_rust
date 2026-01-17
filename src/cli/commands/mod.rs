@@ -9,6 +9,7 @@ pub mod defer;
 pub mod delete;
 pub mod dep;
 pub mod doctor;
+pub mod epic;
 pub mod history;
 pub mod init;
 pub mod label;

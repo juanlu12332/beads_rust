@@ -9,6 +9,7 @@
 
 mod hash;
 pub mod id;
+pub mod time;
 
 pub use hash::{ContentHashable, content_hash, content_hash_from_parts};
 pub use id::{

@@ -1,0 +1,15 @@
+---
+source: tests/snapshots/error_messages.rs
+expression: normalize_output(&output.stderr)
+---
+{
+  "error": {
+    "code": "ISSUE_NOT_FOUND",
+    "context": {
+      "searched_id": "ID-REDACTED"
+    },
+    "hint": "Run 'br list' to see available issues.",
+    "message": "Issue not found: ID-REDACTED",
+    "retryable": false
+  }
+}

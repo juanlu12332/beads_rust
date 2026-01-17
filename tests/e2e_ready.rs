@@ -166,8 +166,10 @@ fn ready_respects_external_dependencies() {
 
     let config_path = workspace.root.join(".beads/config.yaml");
     let external_path = external.root.display();
-    let config = format!("external_projects:\n  extproj: \"{external_path}\"\n");
+    let config = format!("issue_prefix: bd\nexternal_projects:\n  extproj: \"{external_path}\"\n");
     fs::write(&config_path, config).expect("write config");
+    let external_config_path = external.root.join(".beads/config.yaml");
+    fs::write(&external_config_path, "issue_prefix: bd\n").expect("write ext config");
 
     let issue = run_br(&workspace, ["create", "Main issue"], "create_main_issue");
     assert!(issue.status.success(), "create failed: {}", issue.stderr);

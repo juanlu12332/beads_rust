@@ -1,0 +1,6 @@
+---
+source: tests/snapshots/cli_output.rs
+expression: normalize_output(&output.stdout)
+---
+ID-REDACTED Test issue with description [P2] [open]
+----------------------------------------

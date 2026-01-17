@@ -1,0 +1,30 @@
+---
+source: tests/snapshots/json_output.rs
+expression: normalize_json(&json)
+---
+[
+  {
+    "comments": [],
+    "created_at": "TIMESTAMP",
+    "dependencies": [],
+    "dependents": [],
+    "events": [
+      {
+        "actor": "ubuntu",
+        "comment": "Created issue: Detailed issue",
+        "created_at": "TIMESTAMP",
+        "event_type": "created",
+        "id": "ISSUE_ID",
+        "issue_id": "ISSUE_ID"
+      }
+    ],
+    "id": "ISSUE_ID",
+    "issue_type": "task",
+    "labels": [],
+    "parent": null,
+    "priority": 2,
+    "status": "open",
+    "title": "Detailed issue",
+    "updated_at": "TIMESTAMP"
+  }
+]

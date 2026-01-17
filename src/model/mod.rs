@@ -526,6 +526,15 @@ impl Issue {
     }
 }
 
+/// Epic completion status with child counts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EpicStatus {
+    pub epic: Issue,
+    pub total_children: usize,
+    pub closed_children: usize,
+    pub eligible_for_close: bool,
+}
+
 /// Relationship between two issues.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dependency {

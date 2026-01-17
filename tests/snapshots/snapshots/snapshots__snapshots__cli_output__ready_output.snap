@@ -1,0 +1,9 @@
+---
+source: tests/snapshots/cli_output.rs
+expression: normalize_output(&output.stdout)
+---
+Ready to work (3 issues):
+
+1. [P0] ID-REDACTED Critical bug (unassigned)
+2. [P1] ID-REDACTED High priority feature (unassigned)
+3. [P2] ID-REDACTED Medium task (unassigned)

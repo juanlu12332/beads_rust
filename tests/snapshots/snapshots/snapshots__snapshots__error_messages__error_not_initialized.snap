@@ -1,0 +1,13 @@
+---
+source: tests/snapshots/error_messages.rs
+expression: normalize_output(&output.stderr)
+---
+{
+  "error": {
+    "code": "NOT_INITIALIZED",
+    "context": null,
+    "hint": "Run: br init",
+    "message": "Beads not initialized: run 'br init' first",
+    "retryable": false
+  }
+}

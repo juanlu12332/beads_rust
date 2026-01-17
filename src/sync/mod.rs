@@ -3949,7 +3949,9 @@ mod tests {
             Some(&external),
             ConflictResolution::PreferNewer,
         );
-        assert!(matches!(result, MergeResult::KeepWithNote(issue, _) if issue.title == "External Mod"));
+        assert!(
+            matches!(result, MergeResult::KeepWithNote(issue, _) if issue.title == "External Mod")
+        );
     }
 
     #[test]
@@ -3974,14 +3976,17 @@ mod tests {
             Some(&external),
             ConflictResolution::PreferLocal,
         );
-        assert!(matches!(result, MergeResult::KeepWithNote(issue, _) if issue.title == "Local Mod"));
+        assert!(
+            matches!(result, MergeResult::KeepWithNote(issue, _) if issue.title == "Local Mod")
+        );
     }
 
     #[test]
     fn test_merge_convergent_creation_same_content() {
         // Both created independently with same content hash -> keep one
         let local = make_issue_with_hash("bd-011", "Same", fixed_time_merge(100), Some("hash11"));
-        let external = make_issue_with_hash("bd-011", "Same", fixed_time_merge(100), Some("hash11"));
+        let external =
+            make_issue_with_hash("bd-011", "Same", fixed_time_merge(100), Some("hash11"));
 
         let result = merge_issue(
             None,
@@ -4255,7 +4260,8 @@ mod tests {
             "bd-001",
             "Modified",
             fixed_time_merge(200),
-            Some("mod_hash"));
+            Some("mod_hash"),
+        );
 
         let mut base = std::collections::HashMap::new();
         base.insert("bd-001".to_string(), base_issue);

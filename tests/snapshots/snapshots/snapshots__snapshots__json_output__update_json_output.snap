@@ -1,0 +1,13 @@
+---
+source: tests/snapshots/json_output.rs
+expression: normalize_json(&json)
+---
+[
+  {
+    "id": "ISSUE_ID",
+    "priority": 2,
+    "status": "in_progress",
+    "title": "Issue to update",
+    "updated_at": "TIMESTAMP"
+  }
+]

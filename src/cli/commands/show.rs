@@ -12,7 +12,8 @@ use crate::util::id::{IdResolver, ResolverConfig};
 /// Returns an error if the database cannot be opened or issues are not found.
 pub fn execute(ids: Vec<String>, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(None)?;
-    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let storage = &storage_ctx.storage;
 
     let mut target_ids = ids;
     if target_ids.is_empty() {
@@ -26,7 +27,7 @@ pub fn execute(ids: Vec<String>, json: bool, cli: &config::CliOverrides) -> Resu
         target_ids.push(last_touched);
     }
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(storage), cli)?;
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
     let use_color = config::should_use_color(&config_layer);

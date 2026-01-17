@@ -71,9 +71,9 @@ pub fn execute(args: &DeleteArgs, cli: &config::CliOverrides) -> Result<()> {
 
     // 2. Open storage
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
+    let storage = &mut storage_ctx.storage;
 
     // 3. Validate all IDs exist
     for id in &ids {
@@ -142,7 +142,7 @@ pub fn execute(args: &DeleteArgs, cli: &config::CliOverrides) -> Result<()> {
     let mut final_delete_set: HashSet<String> = delete_set;
     if args.cascade {
         // Recursively collect all dependents
-        let cascade_ids = collect_cascade_dependents(&storage, &ids)?;
+        let cascade_ids = collect_cascade_dependents(storage, &ids)?;
         final_delete_set.extend(cascade_ids);
     }
 
@@ -189,6 +189,7 @@ pub fn execute(args: &DeleteArgs, cli: &config::CliOverrides) -> Result<()> {
         }
     }
 
+    storage_ctx.flush_no_db_if_dirty()?;
     Ok(())
 }
 

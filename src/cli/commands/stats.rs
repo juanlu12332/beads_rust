@@ -75,7 +75,8 @@ pub struct StatsOutput {
 /// Returns an error if the database cannot be opened or queries fail.
 pub fn execute(args: &StatsArgs, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let storage = &storage_ctx.storage;
 
     info!("Computing project statistics");
 

@@ -30,7 +30,8 @@ struct CountGroupedOutput {
 /// Returns an error if filters are invalid or the database query fails.
 pub fn execute(args: &CountArgs, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(None)?;
-    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let storage = &storage_ctx.storage;
 
     let mut filters = ListFilters::default();
     let statuses = parse_statuses(&args.status)?;
@@ -69,7 +70,7 @@ pub fn execute(args: &CountArgs, json: bool, cli: &config::CliOverrides) -> Resu
             }
         }
         Some(by) => {
-            let groups = group_counts(&storage, &issues, by)?;
+            let groups = group_counts(storage, &issues, by)?;
             if json {
                 let payload = serde_json::to_string(&CountGroupedOutput { total, groups })?;
                 println!("{payload}");

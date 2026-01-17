@@ -24,8 +24,9 @@ pub fn execute(args: &ListArgs, json: bool, cli: &config::CliOverrides) -> Resul
 
     // Open storage
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let storage = &storage_ctx.storage;
+    let config_layer = config::load_config(&beads_dir, Some(storage), cli)?;
     let use_color = config::should_use_color(&config_layer);
     let max_width = if std::io::stdout().is_terminal() {
         Some(terminal_width())
@@ -49,7 +50,7 @@ pub fn execute(args: &ListArgs, json: bool, cli: &config::CliOverrides) -> Resul
     // Query issues
     let issues = storage.list_issues(&filters)?;
     let mut issues = if client_filters {
-        apply_client_filters(&storage, issues, args)?
+        apply_client_filters(storage, issues, args)?
     } else {
         issues
     };

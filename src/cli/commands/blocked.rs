@@ -4,7 +4,7 @@
 
 use crate::cli::BlockedArgs;
 use crate::config::{
-    CliOverrides, discover_beads_dir, external_project_db_paths, load_config, open_storage,
+    CliOverrides, discover_beads_dir, external_project_db_paths, load_config, open_storage_with_cli,
 };
 use crate::error::{BeadsError, Result};
 use crate::format::BlockedIssue;
@@ -23,10 +23,10 @@ pub fn execute(args: &BlockedArgs, json: bool, overrides: &CliOverrides) -> Resu
     validate_priority_range(&args.priority)?;
 
     let beads_dir = discover_beads_dir(None)?;
-    let (storage, _paths) =
-        open_storage(&beads_dir, overrides.db.as_ref(), overrides.lock_timeout)?;
+    let storage_ctx = open_storage_with_cli(&beads_dir, overrides)?;
+    let storage = &storage_ctx.storage;
 
-    let config_layer = load_config(&beads_dir, Some(&storage), overrides)?;
+    let config_layer = load_config(&beads_dir, Some(storage), overrides)?;
     let external_db_paths = external_project_db_paths(&config_layer, &beads_dir);
 
     // Get blocked issues from cache

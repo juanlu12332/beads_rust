@@ -1,0 +1,14 @@
+---
+source: tests/snapshots/json_output.rs
+expression: normalize_json(&json)
+---
+[
+  {
+    "depends_on_id": "ISSUE_ID",
+    "issue_id": "ISSUE_ID",
+    "priority": 2,
+    "status": "open",
+    "title": "Parent issue",
+    "type": "blocks"
+  }
+]

@@ -16,7 +16,8 @@ pub fn execute(args: &StaleArgs, json: bool, cli: &config::CliOverrides) -> Resu
     }
 
     let beads_dir = config::discover_beads_dir(None)?;
-    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let storage = &storage_ctx.storage;
 
     let statuses = if args.status.is_empty() {
         vec![Status::Open, Status::InProgress]

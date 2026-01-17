@@ -1,0 +1,16 @@
+---
+source: tests/snapshots/error_messages.rs
+expression: normalize_output(&output.stderr)
+---
+{
+  "error": {
+    "code": "INVALID_STATUS",
+    "context": {
+      "hint": null,
+      "status": "invalid"
+    },
+    "hint": "Valid statuses: open, in_progress, blocked, deferred, closed",
+    "message": "Invalid status: invalid",
+    "retryable": true
+  }
+}

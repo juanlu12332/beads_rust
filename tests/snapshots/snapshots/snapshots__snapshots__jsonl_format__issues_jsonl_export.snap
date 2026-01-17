@@ -1,0 +1,6 @@
+---
+source: tests/snapshots/jsonl_format.rs
+expression: normalized
+---
+{"created_at":"TIMESTAMP","id":"ISSUE_ID","issue_type":"task","priority":2,"status":"open","title":"JSONL issue one","updated_at":"TIMESTAMP"}
+{"created_at":"TIMESTAMP","id":"ISSUE_ID","issue_type":"task","priority":2,"status":"open","title":"JSONL issue two","updated_at":"TIMESTAMP"}

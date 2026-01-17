@@ -127,6 +127,12 @@ pub enum Commands {
         command: LabelCommands,
     },
 
+    /// Epic management commands
+    Epic {
+        #[command(subcommand)]
+        command: EpicCommands,
+    },
+
     /// Manage comments
     #[command(alias = "comment")]
     Comments(CommentsArgs),
@@ -558,7 +564,7 @@ pub enum DepCommands {
     Cycles(DepCyclesArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct DepAddArgs {
     /// Issue ID (the one that will depend on something)
     pub issue: String,
@@ -1133,6 +1139,32 @@ pub struct UpgradeArgs {
     pub version: Option<String>,
 
     /// Show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Subcommands for the epic command.
+#[derive(Subcommand, Debug)]
+pub enum EpicCommands {
+    /// Show status of all epics (progress, eligibility)
+    Status(EpicStatusArgs),
+    /// Close epics that are eligible (all children closed)
+    #[command(name = "close-eligible")]
+    CloseEligible(EpicCloseEligibleArgs),
+}
+
+/// Arguments for the epic status command.
+#[derive(Args, Debug, Clone, Default)]
+pub struct EpicStatusArgs {
+    /// Only show epics eligible for closure
+    #[arg(long)]
+    pub eligible_only: bool,
+}
+
+/// Arguments for the epic close-eligible command.
+#[derive(Args, Debug, Clone, Default)]
+pub struct EpicCloseEligibleArgs {
+    /// Preview only, no changes
     #[arg(long)]
     pub dry_run: bool,
 }

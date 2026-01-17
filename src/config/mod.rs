@@ -9,15 +9,18 @@
 //! 6. DB config table
 //! 7. Defaults
 
+pub mod routing;
+
 use crate::error::{BeadsError, Result};
 use crate::model::{IssueType, Priority};
 use crate::storage::SqliteStorage;
+use crate::sync::{export_to_jsonl_with_policy, finalize_export, import_from_jsonl, ExportConfig, ImportConfig};
 use crate::util::id::IdConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::warn;
@@ -217,6 +220,177 @@ pub fn open_storage(
     let paths = ConfigPaths::resolve(beads_dir, resolved_db_override.as_ref())?;
     let storage = SqliteStorage::open_with_timeout(&paths.db_path, resolved_lock_timeout)?;
     Ok((storage, paths))
+}
+
+/// Storage handle with no-db awareness.
+#[derive(Debug)]
+pub struct OpenStorageResult {
+    pub storage: SqliteStorage,
+    pub paths: ConfigPaths,
+    pub no_db: bool,
+}
+
+impl OpenStorageResult {
+    /// Flush JSONL if no-db mode is enabled and there are dirty issues.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JSONL export fails.
+    pub fn flush_no_db_if_dirty(&mut self) -> Result<()> {
+        if !self.no_db {
+            return Ok(());
+        }
+
+        let dirty_ids = self.storage.get_dirty_issue_ids()?;
+        if dirty_ids.is_empty() {
+            return Ok(());
+        }
+
+        let export_config = ExportConfig {
+            force: false,
+            is_default_path: self.paths.jsonl_path == self.paths.beads_dir.join("issues.jsonl"),
+            beads_dir: Some(self.paths.beads_dir.clone()),
+            allow_external_jsonl: false,
+            ..Default::default()
+        };
+
+        let (export_result, _report) =
+            export_to_jsonl_with_policy(&self.storage, &self.paths.jsonl_path, &export_config)?;
+        finalize_export(
+            &mut self.storage,
+            &export_result,
+            Some(&export_result.issue_hashes),
+        )?;
+
+        Ok(())
+    }
+}
+
+/// Open storage with CLI overrides and support for `--no-db` mode.
+///
+/// # Errors
+///
+/// Returns an error if configuration loading, JSONL import, or storage setup fails.
+pub fn open_storage_with_cli(
+    beads_dir: &Path,
+    cli: &CliOverrides,
+) -> Result<OpenStorageResult> {
+    let startup_layer = load_startup_config(beads_dir)?;
+    let cli_layer = cli.as_layer();
+    let merged_layer = ConfigLayer::merge_layers(&[startup_layer, cli_layer]);
+
+    let no_db = no_db_from_layer(&merged_layer).unwrap_or(false);
+
+    let resolved_db_override = cli
+        .db
+        .clone()
+        .or_else(|| db_override_from_layer(&merged_layer));
+    let resolved_lock_timeout = cli
+        .lock_timeout
+        .or_else(|| lock_timeout_from_layer(&merged_layer))
+        .or(Some(30000));
+
+    let paths = ConfigPaths::resolve(beads_dir, resolved_db_override.as_ref())?;
+
+    if no_db {
+        let mut storage = SqliteStorage::open_memory()?;
+        let prefix = resolve_no_db_prefix(beads_dir, &paths.jsonl_path)?;
+        storage.set_config("issue_prefix", &prefix)?;
+
+        if paths.jsonl_path.is_file() {
+            let import_config = ImportConfig {
+                beads_dir: Some(beads_dir.to_path_buf()),
+                allow_external_jsonl: false,
+                ..Default::default()
+            };
+            import_from_jsonl(&mut storage, &paths.jsonl_path, &import_config, Some(&prefix))?;
+        }
+
+        Ok(OpenStorageResult {
+            storage,
+            paths,
+            no_db,
+        })
+    } else {
+        let storage = SqliteStorage::open_with_timeout(&paths.db_path, resolved_lock_timeout)?;
+        Ok(OpenStorageResult {
+            storage,
+            paths,
+            no_db,
+        })
+    }
+}
+
+fn no_db_from_layer(layer: &ConfigLayer) -> Option<bool> {
+    get_startup_value(layer, &["no-db", "no_db", "no.db"]).and_then(|value| parse_bool(value))
+}
+
+fn resolve_no_db_prefix(beads_dir: &Path, jsonl_path: &Path) -> Result<String> {
+    let project_layer = load_project_config(beads_dir)?;
+    if let Some(prefix) = get_value(&project_layer, &["issue_prefix", "issue-prefix", "prefix"]) {
+        let trimmed = prefix.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(prefix) = common_prefix_from_jsonl(jsonl_path)? {
+        return Ok(prefix);
+    }
+
+    if let Some(name) = beads_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return Ok(name.to_string());
+    }
+
+    Ok("bd".to_string())
+}
+
+fn common_prefix_from_jsonl(jsonl_path: &Path) -> Result<Option<String>> {
+    if !jsonl_path.is_file() {
+        return Ok(None);
+    }
+
+    let file = std::fs::File::open(jsonl_path)?;
+    let reader = std::io::BufReader::new(file);
+    let mut prefixes: HashSet<String> = HashSet::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+            BeadsError::Config(format!("Invalid JSON at line {}: {}", line_num + 1, e))
+        })?;
+        let Some(id) = value.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+
+        let Some((prefix, _)) = id.split_once('-') else {
+            return Err(BeadsError::InvalidId { id: id.to_string() });
+        };
+        if prefix.is_empty() {
+            return Err(BeadsError::InvalidId { id: id.to_string() });
+        }
+
+        prefixes.insert(prefix.to_string());
+        if prefixes.len() > 1 {
+            return Err(BeadsError::Config(
+                "Mixed issue prefixes detected in JSONL. Set issue-prefix in .beads/config.yaml."
+                    .to_string(),
+            ));
+        }
+    }
+
+    Ok(prefixes.into_iter().next())
 }
 
 /// Resolve config paths using startup config layers for overrides.

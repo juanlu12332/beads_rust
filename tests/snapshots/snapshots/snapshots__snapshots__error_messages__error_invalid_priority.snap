@@ -1,0 +1,16 @@
+---
+source: tests/snapshots/error_messages.rs
+expression: normalize_output(&output.stderr)
+---
+{
+  "error": {
+    "code": "INVALID_PRIORITY",
+    "context": {
+      "hint": "Priority must be 0-4 (0=critical, 4=backlog).",
+      "priority": 99
+    },
+    "hint": "Use a priority between 0 (critical) and 4 (backlog)",
+    "message": "Priority must be 0-4, got: 99",
+    "retryable": true
+  }
+}

@@ -587,7 +587,8 @@ impl SqliteStorage {
 
         if let Some(limit) = filters.limit {
             if limit > 0 {
-                let _ = write!(sql, " LIMIT {limit}");
+                sql.push_str(" LIMIT ?");
+                params.push(Box::new(limit));
             }
         }
 
@@ -687,7 +688,8 @@ impl SqliteStorage {
 
         if let Some(limit) = filters.limit {
             if limit > 0 {
-                let _ = write!(sql, " LIMIT {limit}");
+                sql.push_str(" LIMIT ?");
+                params.push(Box::new(limit));
             }
         }
 
@@ -1061,9 +1063,9 @@ impl SqliteStorage {
                      i.status, i.priority, i.issue_type, i.assignee, i.owner, i.estimated_minutes,
                      i.created_at, i.created_by, i.updated_at, i.closed_at, i.close_reason, i.closed_by_session,
                      i.due_at, i.defer_until, i.external_ref, i.source_system,
-                     i.deleted_at, i.deleted_by, i.delete_reason, i.original_type,
-                     i.compaction_level, i.compacted_at, i.compacted_at_commit, i.original_size,
-                     i.sender, i.ephemeral, i.pinned, i.is_template,
+                     i.deleted_at, i.deleted_by, i.delete_reason, i.original_type, i.compaction_level,
+                     i.compacted_at, i.compacted_at_commit, i.original_size, i.sender, i.ephemeral,
+                     i.pinned, i.is_template,
                      bc.blocked_by_json
               FROM issues i
               INNER JOIN blocked_issues_cache bc ON i.id = bc.issue_id
@@ -1120,8 +1122,8 @@ impl SqliteStorage {
         }
 
         let mut satisfied: HashMap<String, HashSet<String>> = HashMap::new();
-        for (project, caps) in project_caps {
-            let Some(db_path) = external_db_paths.get(&project) else {
+        for (project, caps) in &project_caps {
+            let Some(db_path) = external_db_paths.get(project) else {
                 tracing::warn!(
                     project = %project,
                     "External project not configured; treating dependencies as unsatisfied"
@@ -1129,9 +1131,9 @@ impl SqliteStorage {
                 continue;
             };
 
-            match query_external_project_capabilities(db_path, &caps) {
+            match query_external_project_capabilities(db_path, caps) {
                 Ok(found) => {
-                    satisfied.insert(project, found);
+                    satisfied.insert(project.clone(), found);
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -1362,6 +1364,12 @@ impl SqliteStorage {
                 ],
             )?;
 
+            // Bump updated_at
+            tx.execute(
+                "UPDATE issues SET updated_at = ? WHERE id = ?",
+                rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+            )?;
+
             ctx.record_event(
                 EventType::DependencyAdded,
                 issue_id,
@@ -1392,6 +1400,12 @@ impl SqliteStorage {
             )?;
 
             if rows > 0 {
+                // Bump updated_at
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+                )?;
+
                 ctx.record_event(
                     EventType::DependencyRemoved,
                     issue_id,
@@ -1429,6 +1443,22 @@ impl SqliteStorage {
             let total = outgoing + incoming;
 
             if total > 0 {
+                let now = Utc::now().to_rfc3339();
+
+                // Bump updated_at for issue_id
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![now, issue_id],
+                )?;
+
+                // Bump updated_at for affected issues
+                for affected_id in &affected {
+                    tx.execute(
+                        "UPDATE issues SET updated_at = ? WHERE id = ?",
+                        rusqlite::params![now, affected_id],
+                    )?;
+                }
+
                 ctx.record_event(
                     EventType::DependencyRemoved,
                     issue_id,
@@ -1458,6 +1488,12 @@ impl SqliteStorage {
             )?;
 
             if rows > 0 {
+                // Bump updated_at
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+                )?;
+
                 ctx.record_event(
                     EventType::DependencyRemoved,
                     issue_id,
@@ -1500,6 +1536,12 @@ impl SqliteStorage {
             );
             ctx.mark_dirty(issue_id);
 
+            // Update timestamp
+            tx.execute(
+                "UPDATE issues SET updated_at = ? WHERE id = ?",
+                rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+            )?;
+
             Ok(true)
         })
     }
@@ -1517,6 +1559,12 @@ impl SqliteStorage {
             )?;
 
             if rows > 0 {
+                // Bump updated_at
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+                )?;
+
                 ctx.record_event(
                     EventType::LabelRemoved,
                     issue_id,
@@ -1542,6 +1590,12 @@ impl SqliteStorage {
             )?;
 
             if rows > 0 {
+                // Bump updated_at
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+                )?;
+
                 ctx.record_event(
                     EventType::LabelRemoved,
                     issue_id,
@@ -1608,6 +1662,12 @@ impl SqliteStorage {
                     Some(format!("Labels {}", details.join("; "))),
                 );
                 ctx.mark_dirty(issue_id);
+
+                // Bump updated_at
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![Utc::now().to_rfc3339(), issue_id],
+                )?;
             }
 
             Ok(())
@@ -1712,10 +1772,6 @@ impl SqliteStorage {
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             drop(stmt);
 
-            if issue_ids.is_empty() {
-                return Ok(0);
-            }
-
             // Check if any issues already have the new label (would cause duplicates)
             let mut check_stmt =
                 tx.prepare("SELECT issue_id FROM labels WHERE label = ? AND issue_id IN (SELECT issue_id FROM labels WHERE label = ?)")?;
@@ -1740,6 +1796,7 @@ impl SqliteStorage {
             )?;
 
             // Mark all affected issues as dirty and record events
+            let now = Utc::now().to_rfc3339();
             for issue_id in &issue_ids {
                 ctx.record_event(
                     EventType::LabelRemoved,
@@ -1747,6 +1804,12 @@ impl SqliteStorage {
                     Some(format!("Renamed label {old_name} to {new_name}")),
                 );
                 ctx.mark_dirty(issue_id);
+
+                // Update timestamp
+                tx.execute(
+                    "UPDATE issues SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![now, issue_id],
+                )?;
             }
 
             Ok(renamed + conflicts.len())
@@ -1791,8 +1854,8 @@ impl SqliteStorage {
             let comment_id = insert_comment_row(tx, issue_id, author, text)?;
 
             tx.execute(
-                "UPDATE issues SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                rusqlite::params![issue_id],
+                "UPDATE issues SET updated_at = ? WHERE id = ?",
+                rusqlite::params![Utc::now().to_rfc3339(), issue_id],
             )?;
 
             ctx.record_event(EventType::Commented, issue_id, Some(text.to_string()));
@@ -2023,9 +2086,9 @@ impl SqliteStorage {
                            status, priority, issue_type, assignee, owner, estimated_minutes,
                            created_at, created_by, updated_at, closed_at, close_reason, closed_by_session,
                            due_at, defer_until, external_ref, source_system,
-                           deleted_at, deleted_by, delete_reason, original_type,
-                           compaction_level, compacted_at, compacted_at_commit, original_size,
-                           sender, ephemeral, pinned, is_template
+                           deleted_at, deleted_by, delete_reason, original_type, compaction_level,
+                           compacted_at, compacted_at_commit, original_size, sender, ephemeral,
+                           pinned, is_template
                     FROM issues
                     WHERE (ephemeral = 0 OR ephemeral IS NULL)
                       AND id NOT LIKE '%-wisp-%'
@@ -2249,7 +2312,7 @@ impl SqliteStorage {
 
         // Build a query that finds dirty issues where:
         // 1. The issue has no export hash (never exported), OR
-        // 2. The issue's current content_hash differs from the stored export hash
+        // 2. The issue's current content hash differs from the stored export hash
         let placeholders: Vec<&str> = dirty_ids.iter().map(|_| "?").collect();
         let sql = format!(
             "SELECT i.id FROM issues i
@@ -2715,41 +2778,38 @@ impl SqliteStorage {
 
     /// Check if adding a dependency would create a cycle.
     ///
-    /// Uses DFS to detect if `depends_on_id` can reach `issue_id` through existing dependencies.
+    /// Uses a recursive CTE to detect if `depends_on_id` can reach `issue_id` through existing dependencies.
     /// Only considers blocking dependency types.
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
     pub fn would_create_cycle(&self, issue_id: &str, depends_on_id: &str) -> Result<bool> {
-        // If A depends on B, a cycle exists if B can reach A through existing dependencies
-        // We need to check: can we reach issue_id starting from depends_on_id?
+        // If A depends on B, a cycle exists if B can reach A through existing dependencies.
+        // We check if `issue_id` is reachable from `depends_on_id`.
 
-        use std::collections::HashSet;
+        let query = r"
+            WITH RECURSIVE transitive_deps(id) AS (
+                -- Base case: direct dependencies of depends_on_id
+                SELECT depends_on_id FROM dependencies WHERE issue_id = ?1
+                UNION
+                -- Recursive step: dependencies of dependencies
+                SELECT d.depends_on_id
+                FROM dependencies d
+                JOIN transitive_deps td ON d.issue_id = td.id
+            )
+            SELECT 1 FROM transitive_deps WHERE id = ?2 LIMIT 1;
+        ";
 
-        let mut visited = HashSet::new();
-        let mut stack = vec![depends_on_id.to_string()];
+        let exists: bool = self
+            .conn
+            .query_row(query, rusqlite::params![depends_on_id, issue_id], |_| {
+                Ok(true)
+            })
+            .optional()?
+            .unwrap_or(false);
 
-        while let Some(current) = stack.pop() {
-            if current == issue_id {
-                return Ok(true); // Found a cycle
-            }
-
-            if visited.contains(&current) {
-                continue;
-            }
-            visited.insert(current.clone());
-
-            // Get dependencies of current (what current depends on)
-            let deps = self.get_dependencies(&current)?;
-            for dep in deps {
-                if !visited.contains(&dep) {
-                    stack.push(dep);
-                }
-            }
-        }
-
-        Ok(false)
+        Ok(exists)
     }
 
     /// Detect all cycles in the dependency graph.
@@ -3556,9 +3616,10 @@ mod tests {
     fn test_ready_excludes_blocked_issue() {
         let mut storage = SqliteStorage::open_memory().unwrap();
         let t1 = Utc.with_ymd_and_hms(2025, 3, 1, 0, 0, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2025, 3, 2, 0, 0, 0).unwrap();
 
         let blocker = make_issue("bd-blocker", "Blocker", Status::Open, 1, None, t1, None);
-        let blocked = make_issue("bd-blocked", "Blocked", Status::Open, 2, None, t1, None);
+        let blocked = make_issue("bd-blocked", "Blocked", Status::Open, 2, None, t2, None);
         storage.create_issue(&blocker, "tester").unwrap();
         storage.create_issue(&blocked, "tester").unwrap();
 
@@ -4132,15 +4193,15 @@ mod tests {
     #[test]
     fn test_update_issue_recomputes_hash() {
         let mut storage = SqliteStorage::open_memory().unwrap();
-        let issue = Issue {
+        let mut issue = Issue {
             id: "bd-hash".to_string(),
-            title: "Original Title".to_string(),
-            content_hash: Some("placeholder".to_string()),
+            title: "Old Title".to_string(),
             status: Status::Open,
             priority: Priority::MEDIUM,
             issue_type: IssueType::Task,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            content_hash: None,
             description: None,
             design: None,
             acceptance_criteria: None,
@@ -4172,6 +4233,7 @@ mod tests {
             dependencies: vec![],
             comments: vec![],
         };
+        issue.content_hash = Some(issue.compute_content_hash());
         storage.create_issue(&issue, "tester").unwrap();
 
         // Get initial hash

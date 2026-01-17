@@ -3,6 +3,7 @@ use crate::config;
 use crate::error::{BeadsError, Result};
 use crate::model::{Issue, IssueType, Priority, Status};
 use crate::util::id::IdGenerator;
+use crate::util::time::parse_flexible_timestamp;
 use crate::validation::{IssueValidator, LabelValidator};
 use chrono::{DateTime, Utc};
 use std::path::Path;
@@ -28,15 +29,13 @@ pub fn execute(args: CreateArgs, cli: &config::CliOverrides) -> Result<()> {
     // 2. Open storage (unless dry run without DB)
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
 
-    // We open storage even for dry-run to check ID collisions, unless no-db flag is used?
-    // But CliOverrides passed to open_storage handles that.
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
-
-    let layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    // We open storage even for dry-run to check ID collisions.
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let id_config = config::id_config_from_layer(&layer);
     let default_priority = config::default_priority_from_layer(&layer)?;
     let default_issue_type = config::default_issue_type_from_layer(&layer)?;
+    let storage = &mut storage_ctx.storage;
 
     // 3. Generate ID
     let id_gen = IdGenerator::new(id_config);
@@ -206,15 +205,13 @@ pub fn execute(args: CreateArgs, cli: &config::CliOverrides) -> Result<()> {
         println!("Created {}: {}", issue.id, issue.title);
     }
 
+    storage_ctx.flush_no_db_if_dirty()?;
     Ok(())
 }
 
 fn parse_optional_date(s: Option<&str>) -> Result<Option<DateTime<Utc>>> {
     match s {
-        Some(s) if !s.is_empty() => DateTime::parse_from_rfc3339(s)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map(Some)
-            .map_err(|_| BeadsError::validation("date", "invalid format (expected RFC3339)")),
+        Some(s) if !s.is_empty() => parse_flexible_timestamp(s, "date").map(Some),
         _ => Ok(None),
     }
 }

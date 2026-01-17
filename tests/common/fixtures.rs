@@ -1,9 +1,17 @@
 #![allow(dead_code)]
 
 use beads_rust::model::{Dependency, DependencyType, Issue, IssueType, Priority, Status};
-use chrono::Utc;
+use chrono::{Duration, TimeZone, Utc};
+
+/// Base time for test fixtures - set in the past to allow tests to manipulate
+/// `updated_at` without violating the `created_at` <= `updated_at` constraint.
+fn base_time() -> chrono::DateTime<Utc> {
+    // Use a fixed timestamp to ensure deterministic IDs for snapshot tests
+    Utc.timestamp_opt(1_735_689_600, 0).unwrap() // 2025-01-01 00:00:00 UTC
+}
 
 pub fn issue(title: &str) -> Issue {
+    let base = base_time();
     Issue {
         id: format!("test-{}", hash_title(title)),
         title: title.to_string(),
@@ -13,8 +21,8 @@ pub fn issue(title: &str) -> Issue {
         priority: Priority::MEDIUM,
         assignee: None,
         labels: vec![],
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        created_at: base,
+        updated_at: base + Duration::seconds(1),
         content_hash: None,
         design: None,
         acceptance_criteria: None,

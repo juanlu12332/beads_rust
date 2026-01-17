@@ -1,0 +1,334 @@
+//! Epic command implementation.
+
+use crate::cli::{EpicCloseEligibleArgs, EpicCommands, EpicStatusArgs};
+use crate::config;
+use crate::error::Result;
+use crate::model::{EpicStatus, IssueType, Status};
+use crate::storage::{IssueUpdate, ListFilters, SqliteStorage};
+use chrono::Utc;
+use colored::Colorize;
+use serde::Serialize;
+use std::cmp::Ordering;
+use std::path::Path;
+
+/// Execute the epic command.
+///
+/// # Errors
+///
+/// Returns an error if database operations fail.
+pub fn execute(command: &EpicCommands, json: bool, cli: &config::CliOverrides) -> Result<()> {
+    match command {
+        EpicCommands::Status(args) => execute_status(args, json, cli),
+        EpicCommands::CloseEligible(args) => execute_close_eligible(args, json, cli),
+    }
+}
+
+fn execute_status(args: &EpicStatusArgs, json: bool, cli: &config::CliOverrides) -> Result<()> {
+    let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
+    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let use_color = config::should_use_color(&config_layer);
+
+    let mut epics = load_epic_statuses(&storage)?;
+    if args.eligible_only {
+        epics.retain(|e| e.eligible_for_close);
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&epics)?);
+        return Ok(());
+    }
+
+    if epics.is_empty() {
+        println!("No open epics found");
+        return Ok(());
+    }
+
+    for epic_status in &epics {
+        render_epic_status(epic_status, use_color);
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct CloseEligibleResult {
+    closed: Vec<String>,
+    count: usize,
+}
+
+fn execute_close_eligible(
+    args: &EpicCloseEligibleArgs,
+    json: bool,
+    cli: &config::CliOverrides) -> Result<()> {
+    let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
+    let (mut storage, _paths) =
+        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let actor = config::resolve_actor(&config_layer);
+
+    let mut epics = load_epic_statuses(&storage)?;
+    epics.retain(|e| e.eligible_for_close);
+
+    if epics.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            println!("No epics eligible for closure");
+        }
+        return Ok(());
+    }
+
+    if args.dry_run {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&epics)?);
+        } else {
+            println!("Would close {} epic(s):", epics.len());
+            for epic_status in &epics {
+                println!("  - {}: {}", epic_status.epic.id, epic_status.epic.title);
+            }
+        }
+        return Ok(());
+    }
+
+    let mut closed_ids = Vec::new();
+    for epic_status in &epics {
+        let now = Utc::now();
+        let update = IssueUpdate {
+            status: Some(Status::Closed),
+            closed_at: Some(Some(now)),
+            close_reason: Some(Some("All children completed".to_string())),
+            ..Default::default()
+        };
+
+        match storage.update_issue(&epic_status.epic.id, &update, &actor) {
+            Ok(_) => closed_ids.push(epic_status.epic.id.clone()),
+            Err(err) => eprintln!("Error closing {}: {err}", epic_status.epic.id),
+        }
+    }
+
+    if !closed_ids.is_empty() {
+        storage.rebuild_blocked_cache(true)?;
+    }
+
+    if json {
+        let result = CloseEligibleResult {
+            closed: closed_ids.clone(),
+            count: closed_ids.len(),
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("✓ Closed {} epic(s)", closed_ids.len());
+        for id in &closed_ids {
+            println!("  - {id}");
+        }
+    }
+
+    Ok(())
+}
+
+fn load_epic_statuses(storage: &SqliteStorage) -> Result<Vec<EpicStatus>> {
+    let filters = ListFilters {
+        types: Some(vec![IssueType::Epic]),
+        include_closed: false,
+        ..Default::default()
+    };
+    let epics = storage.list_issues(&filters)?;
+
+    let mut statuses = Vec::new();
+    for epic in epics {
+        let children = storage.get_dependents_with_metadata(&epic.id)?;
+        let parent_children: Vec<_> = children
+            .into_iter()
+            .filter(|c| c.dep_type == "parent-child")
+            .collect();
+        let total_children = parent_children.len();
+        let closed_children = parent_children
+            .iter()
+            .filter(|c| matches!(c.status, Status::Closed | Status::Tombstone))
+            .count();
+        let eligible_for_close = total_children > 0 && closed_children == total_children;
+
+        statuses.push(EpicStatus {
+            epic,
+            total_children,
+            closed_children,
+            eligible_for_close,
+        });
+    }
+
+    statuses.sort_by(|a, b| {
+        let primary = a.epic.priority.cmp(&b.epic.priority);
+        if primary == Ordering::Equal {
+            a.epic.created_at.cmp(&b.epic.created_at)
+        } else {
+            primary
+        }
+    });
+
+    Ok(statuses)
+}
+
+fn render_epic_status(epic_status: &EpicStatus, use_color: bool) {
+    let total = epic_status.total_children;
+    let closed = epic_status.closed_children;
+    let percentage = if total > 0 { (closed * 100) / total } else { 0 };
+    let status_icon = render_status_icon(epic_status.eligible_for_close, percentage, use_color);
+
+    let id = if use_color {
+        epic_status.epic.id.cyan().to_string()
+    } else {
+        epic_status.epic.id.clone()
+    };
+
+    let title = if use_color {
+        epic_status.epic.title.bold().to_string()
+    } else {
+        epic_status.epic.title.clone()
+    };
+
+    println!("{status_icon} {id} {title}");
+    println!(
+        "   Progress: {closed}/{total} children closed ({percentage}%)"
+    );
+    if epic_status.eligible_for_close {
+        let line = if use_color {
+            "Eligible for closure".green().to_string()
+        } else {
+            "Eligible for closure".to_string()
+        };
+        println!("   {line}");
+    }
+    println!();
+}
+
+fn render_status_icon(eligible: bool, percentage: usize, use_color: bool) -> String {
+    if eligible {
+        if use_color {
+            "✓".green().to_string()
+        } else {
+            "✓".to_string()
+        }
+    } else if percentage > 0 {
+        if use_color {
+            "○".yellow().to_string()
+        } else {
+            "○".to_string()
+        }
+    } else {
+        "○".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Issue, Priority};
+    use chrono::TimeZone;
+
+    fn base_issue(id: &str, title: &str, issue_type: IssueType, status: Status) -> Issue {
+        Issue {
+            id: id.to_string(),
+            content_hash: None,
+            title: title.to_string(),
+            description: None,
+            design: None,
+            acceptance_criteria: None,
+            notes: None,
+            status,
+            priority: Priority::MEDIUM,
+            issue_type,
+            assignee: None,
+            owner: None,
+            estimated_minutes: None,
+            created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            created_by: None,
+            updated_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            closed_at: None,
+            close_reason: None,
+            closed_by_session: None,
+            due_at: None,
+            defer_until: None,
+            external_ref: None,
+            source_system: None,
+            deleted_at: None,
+            deleted_by: None,
+            delete_reason: None,
+            original_type: None,
+            compaction_level: None,
+            compacted_at: None,
+            compacted_at_commit: None,
+            original_size: None,
+            sender: None,
+            ephemeral: false,
+            pinned: false,
+            is_template: false,
+            labels: vec![],
+            dependencies: vec![],
+            comments: vec![],
+        }
+    }
+
+    fn find_epic<'a>(epics: &'a [EpicStatus], id: &str) -> Option<&'a EpicStatus> {
+        epics.iter().find(|e| e.epic.id == id)
+    }
+
+    #[test]
+    fn epic_status_tracks_children_and_eligibility() {
+        let mut storage = SqliteStorage::open_memory().unwrap();
+
+        let epic = base_issue("bd-epic-1", "Epic", IssueType::Epic, Status::Open);
+        let task1 = base_issue("bd-task-1", "Task 1", IssueType::Task, Status::Open);
+        let task2 = base_issue("bd-task-2", "Task 2", IssueType::Task, Status::Open);
+
+        storage.create_issue(&epic, "tester").unwrap();
+        storage.create_issue(&task1, "tester").unwrap();
+        storage.create_issue(&task2, "tester").unwrap();
+        storage
+            .add_dependency("bd-task-1", "bd-epic-1", "parent-child", "tester")
+            .unwrap();
+        storage
+            .add_dependency("bd-task-2", "bd-epic-1", "parent-child", "tester")
+            .unwrap();
+
+        let epics = load_epic_statuses(&storage).unwrap();
+        let epic_status = find_epic(&epics, "bd-epic-1").expect("epic not found");
+        assert_eq!(epic_status.total_children, 2);
+        assert_eq!(epic_status.closed_children, 0);
+        assert!(!epic_status.eligible_for_close);
+
+        let update = IssueUpdate {
+            status: Some(Status::Closed),
+            closed_at: Some(Some(Utc::now())),
+            close_reason: Some(Some("Done".to_string())),
+            ..Default::default()
+        };
+        storage.update_issue("bd-task-1", &update, "tester").unwrap();
+
+        let epics = load_epic_statuses(&storage).unwrap();
+        let epic_status = find_epic(&epics, "bd-epic-1").expect("epic not found");
+        assert_eq!(epic_status.total_children, 2);
+        assert_eq!(epic_status.closed_children, 1);
+        assert!(!epic_status.eligible_for_close);
+
+        storage.update_issue("bd-task-2", &update, "tester").unwrap();
+        let epics = load_epic_statuses(&storage).unwrap();
+        let epic_status = find_epic(&epics, "bd-epic-1").expect("epic not found");
+        assert_eq!(epic_status.total_children, 2);
+        assert_eq!(epic_status.closed_children, 2);
+        assert!(epic_status.eligible_for_close);
+    }
+
+    #[test]
+    fn epic_status_childless_epic_not_eligible() {
+        let mut storage = SqliteStorage::open_memory().unwrap();
+        let epic = base_issue("bd-epic-2", "Childless", IssueType::Epic, Status::Open);
+        storage.create_issue(&epic, "tester").unwrap();
+
+        let epics = load_epic_statuses(&storage).unwrap();
+        let epic_status = find_epic(&epics, "bd-epic-2").expect("epic not found");
+        assert_eq!(epic_status.total_children, 0);
+        assert_eq!(epic_status.closed_children, 0);
+        assert!(!epic_status.eligible_for_close);
+    }
+}

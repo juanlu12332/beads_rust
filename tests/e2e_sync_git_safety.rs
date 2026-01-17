@@ -154,13 +154,21 @@ fn regression_sync_export_does_not_create_commits() {
     assert!(init.status.success(), "init failed: {}", init.stderr);
 
     // Create some issues
-    let create1 = run_br(&workspace, ["create", "Test issue 1"], "create1");
+    let create1 = run_br(
+        &workspace,
+        ["create", "Test issue 1", "--no-auto-flush"],
+        "create1",
+    );
     assert!(
         create1.status.success(),
         "create1 failed: {}",
         create1.stderr
     );
-    let create2 = run_br(&workspace, ["create", "Test issue 2"], "create2");
+    let create2 = run_br(
+        &workspace,
+        ["create", "Test issue 2", "--no-auto-flush"],
+        "create2",
+    );
     assert!(
         create2.status.success(),
         "create2 failed: {}",
@@ -268,7 +276,11 @@ fn regression_sync_import_does_not_create_commits() {
     let init = run_br(&workspace, ["init"], "init");
     assert!(init.status.success(), "init failed: {}", init.stderr);
 
-    let create = run_br(&workspace, ["create", "Original issue"], "create");
+    let create = run_br(
+        &workspace,
+        ["create", "Original issue", "--no-auto-flush"],
+        "create",
+    );
     assert!(create.status.success(), "create failed: {}", create.stderr);
 
     // Export first
@@ -366,15 +378,19 @@ fn regression_full_sync_cycle_does_not_touch_git() {
     assert!(init.status.success(), "init failed: {}", init.stderr);
 
     // Create multiple issues with different types
-    let _ = run_br(&workspace, ["create", "Bug fix", "-t", "bug"], "create_bug");
     let _ = run_br(
         &workspace,
-        ["create", "New feature", "-t", "feature"],
+        ["create", "Bug fix", "-t", "bug", "--no-auto-flush"],
+        "create_bug",
+    );
+    let _ = run_br(
+        &workspace,
+        ["create", "New feature", "-t", "feature", "--no-auto-flush"],
         "create_feature",
     );
     let _ = run_br(
         &workspace,
-        ["create", "Documentation", "-t", "docs"],
+        ["create", "Documentation", "-t", "docs", "--no-auto-flush"],
         "create_docs",
     );
 
@@ -479,7 +495,11 @@ fn regression_sync_manifest_does_not_touch_git() {
     let init = run_br(&workspace, ["init"], "init");
     assert!(init.status.success(), "init failed: {}", init.stderr);
 
-    let create = run_br(&workspace, ["create", "Manifest test issue"], "create");
+    let create = run_br(
+        &workspace,
+        ["create", "Manifest test issue", "--no-auto-flush"],
+        "create",
+    );
     assert!(create.status.success(), "create failed: {}", create.stderr);
 
     // Record git state before
@@ -554,7 +574,11 @@ fn regression_sync_never_touches_source_files() {
     let init = run_br(&workspace, ["init"], "init");
     assert!(init.status.success(), "init failed");
 
-    let create = run_br(&workspace, ["create", "Test issue"], "create");
+    let create = run_br(
+        &workspace,
+        ["create", "Test issue", "--no-auto-flush"],
+        "create",
+    );
     assert!(create.status.success(), "create failed");
 
     let flush = run_br(&workspace, ["sync", "--flush-only"], "flush");
@@ -924,6 +948,7 @@ fn integration_sync_only_touches_allowed_files() {
             "feature",
             "-p",
             "1",
+            "--no-auto-flush",
         ],
         "create_feature",
     );
@@ -936,17 +961,32 @@ fn integration_sync_only_touches_allowed_files() {
             "bug",
             "-p",
             "0",
+            "--no-auto-flush",
         ],
         "create_bug",
     );
     let _ = run_br(
         &workspace,
-        ["create", "Task: Write unit tests", "-t", "task"],
+        [
+            "create",
+            "Task: Write unit tests",
+            "-t",
+            "task",
+            "--no-auto-flush",
+        ],
         "create_task",
     );
     let _ = run_br(
         &workspace,
-        ["create", "Docs: Update README", "-t", "docs", "-p", "3"],
+        [
+            "create",
+            "Docs: Update README",
+            "-t",
+            "docs",
+            "-p",
+            "3",
+            "--no-auto-flush",
+        ],
         "create_docs",
     );
 
@@ -1362,7 +1402,11 @@ fn integration_sync_manifest_only_touches_allowed_files() {
     let init = run_br(&workspace, ["init"], "init");
     assert!(init.status.success(), "init failed");
 
-    let _ = run_br(&workspace, ["create", "Test issue"], "create");
+    let _ = run_br(
+        &workspace,
+        ["create", "Test issue", "--no-auto-flush"],
+        "create",
+    );
 
     // Take snapshot before manifest sync
     let snapshot_before = FileTreeSnapshot::new(&workspace.root);

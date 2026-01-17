@@ -1,0 +1,17 @@
+---
+source: tests/snapshots/json_output.rs
+expression: normalize_json(&json)
+---
+[
+  {
+    "created_at": "TIMESTAMP",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "id": "ISSUE_ID",
+    "issue_type": "bug",
+    "priority": 2,
+    "status": "open",
+    "title": "Bug: Fix login",
+    "updated_at": "TIMESTAMP"
+  }
+]

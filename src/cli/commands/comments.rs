@@ -16,35 +16,38 @@ use std::process::Command;
 /// Returns an error if database operations fail or if inputs are invalid.
 pub fn execute(args: &CommentsArgs, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
-    let all_ids = storage.get_all_ids()?;
+    let all_ids = storage_ctx.storage.get_all_ids()?;
     let actor = config::actor_from_layer(&config_layer);
+    let storage = &mut storage_ctx.storage;
 
     match &args.command {
         Some(CommentCommands::Add(add_args)) => add_comment(
             add_args,
-            &mut storage,
+            storage,
             &resolver,
             &all_ids,
             actor.as_deref(),
             json,
         ),
         Some(CommentCommands::List(list_args)) => {
-            list_comments(list_args, &storage, &resolver, &all_ids, json)
+            list_comments(list_args, storage, &resolver, &all_ids, json)
         }
         None => {
             let id = args
                 .id
                 .as_deref()
                 .ok_or_else(|| BeadsError::validation("id", "missing issue id"))?;
-            list_comments_by_id(id, &storage, &resolver, &all_ids, json)
+            list_comments_by_id(id, storage, &resolver, &all_ids, json)
         }
-    }
+    }?;
+
+    storage_ctx.flush_no_db_if_dirty()?;
+    Ok(())
 }
 
 fn add_comment(

@@ -1,0 +1,13 @@
+---
+source: tests/snapshots/json_output.rs
+expression: normalize_json(&json)
+---
+{
+  "created_at": "TIMESTAMP",
+  "id": "ISSUE_ID",
+  "issue_type": "feature",
+  "priority": 1,
+  "status": "open",
+  "title": "New feature request",
+  "updated_at": "TIMESTAMP"
+}

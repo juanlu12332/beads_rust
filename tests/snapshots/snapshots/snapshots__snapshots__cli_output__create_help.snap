@@ -1,0 +1,41 @@
+---
+source: tests/snapshots/cli_output.rs
+expression: normalize_output(&output.stdout)
+---
+Create a new issue
+
+Usage: br create [OPTIONS] [TITLE]
+
+Arguments:
+  [TITLE]  Issue title
+
+Options:
+      --ID-REDACTED <TITLE_FLAG>      Issue title (alternative flag)
+  -t, --type <TYPE>                  Issue type (task, bug, feature, etc.)
+  -p, --priority <PRIORITY>          Priority (0-4 or P0-P4)
+  -d, --description <DESCRIPTION>    Description
+  -a, --assignee <ASSIGNEE>          Assign to person
+      --owner <OWNER>                Set owner email
+  -l, --labels <LABELS>              Labels (ID-REDACTED)
+      --parent <PARENT>              Parent issue ID (creates ID-REDACTED dep)
+      --deps <DEPS>                  Dependencies (format: type:id,type:id)
+  -e, --estimate <ESTIMATE>          Time estimate in minutes
+      --due <DUE>                    Due date (RFC3339 or relative)
+      --defer <DEFER>                Defer until date (RFC3339 or relative)
+      --ID-REDACTED <EXTERNAL_REF>  External reference
+      --ephemeral                    Mark as ephemeral (not exported to JSONL)
+      --ID-REDACTED                      Preview without creating
+      --silent                       Output only issue ID
+      --db <DB>                      Database path (ID-REDACTED .beads/*.db if not set)
+      --actor <ACTOR>                Actor name for audit trail
+      --json                         Output as JSON
+      --ID-REDACTED                    Force direct mode (no daemon) - effectively no-op in br v1
+      --ID-REDACTED                Skip auto JSONL export
+      --ID-REDACTED               Skip auto import check
+      --ID-REDACTED                  Allow stale DB (bypass freshness check warning)
+      --ID-REDACTED <LOCK_TIMEOUT>  `SQLite` busy timeout in ms
+      --no-db                        ID-REDACTED mode (no DB connection)
+  -v, --verbose...                   Increase logging verbosity (-v, -vv)
+  -q, --quiet                        Quiet mode (no output except errors)
+      --ID-REDACTED                     Disable colored output
+  -h, --help                         Print help

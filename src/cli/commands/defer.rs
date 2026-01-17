@@ -6,7 +6,7 @@ use crate::error::{BeadsError, Result};
 use crate::model::Status;
 use crate::storage::IssueUpdate;
 use crate::util::id::{IdResolver, ResolverConfig, find_matching_ids};
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, TimeZone, Utc};
+use crate::util::time::parse_flexible_timestamp;
 use serde::Serialize;
 
 /// Result of deferring a single issue.
@@ -42,84 +42,6 @@ pub struct UndeferResult {
     pub skipped: Vec<SkippedIssue>,
 }
 
-/// Parse a flexible time specification into a `DateTime`.
-///
-/// Supports:
-/// - RFC3339: `2025-01-15T12:00:00Z`, `2025-01-15T12:00:00+00:00`
-/// - Simple date: `2025-01-15` (defaults to 9:00 AM local time)
-/// - Relative duration: `+1h`, `+2d`, `+1w`, `+30m`
-/// - Keywords: `tomorrow`, `next-week`
-fn parse_defer_time(s: &str) -> Result<DateTime<Utc>> {
-    let s = s.trim();
-
-    // Try RFC3339 first
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-
-    // Try simple date (YYYY-MM-DD) - default to 9:00 AM local time
-    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        let time = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
-        let naive_dt = date.and_time(time);
-        let local_dt = Local
-            .from_local_datetime(&naive_dt)
-            .single()
-            .ok_or_else(|| BeadsError::validation("defer_until", "ambiguous local time"))?;
-        return Ok(local_dt.with_timezone(&Utc));
-    }
-
-    // Try relative duration (+1h, +2d, +1w, +30m)
-    if let Some(rest) = s.strip_prefix('+') {
-        if let Some(unit_char) = rest.chars().last() {
-            let amount_str = &rest[..rest.len() - 1];
-            if let Ok(amount) = amount_str.parse::<i64>() {
-                let duration = match unit_char {
-                    'm' => Duration::minutes(amount),
-                    'h' => Duration::hours(amount),
-                    'd' => Duration::days(amount),
-                    'w' => Duration::weeks(amount),
-                    _ => {
-                        return Err(BeadsError::validation(
-                            "defer_until",
-                            "invalid unit (use m, h, d, w)",
-                        ));
-                    }
-                };
-                return Ok(Utc::now() + duration);
-            }
-        }
-    }
-
-    // Try keywords
-    let now = Local::now();
-    match s.to_lowercase().as_str() {
-        "tomorrow" => {
-            let tomorrow = now.date_naive() + Duration::days(1);
-            let time = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
-            let naive_dt = tomorrow.and_time(time);
-            let local_dt = Local
-                .from_local_datetime(&naive_dt)
-                .single()
-                .ok_or_else(|| BeadsError::validation("defer_until", "ambiguous local time"))?;
-            Ok(local_dt.with_timezone(&Utc))
-        }
-        "next-week" | "nextweek" => {
-            let next_week = now.date_naive() + Duration::weeks(1);
-            let time = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
-            let naive_dt = next_week.and_time(time);
-            let local_dt = Local
-                .from_local_datetime(&naive_dt)
-                .single()
-                .ok_or_else(|| BeadsError::validation("defer_until", "ambiguous local time"))?;
-            Ok(local_dt.with_timezone(&Utc))
-        }
-        _ => Err(BeadsError::validation(
-            "defer_until",
-            "invalid time format (try: +1h, +2d, tomorrow, next-week, or 2025-01-15)",
-        )),
-    }
-}
-
 /// Execute the defer command.
 ///
 /// # Errors
@@ -138,20 +60,20 @@ pub fn execute_defer(args: &DeferArgs, json: bool, cli: &config::CliOverrides) -
     }
 
     let beads_dir = config::discover_beads_dir(None)?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let actor = config::resolve_actor(&config_layer);
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
-    let all_ids = storage.get_all_ids()?;
+    let all_ids = storage_ctx.storage.get_all_ids()?;
+    let storage = &mut storage_ctx.storage;
 
     // Parse defer_until if provided
     let defer_until = args
         .until
         .as_ref()
-        .map(|s| parse_defer_time(s))
+        .map(|s| parse_flexible_timestamp(s, "defer_until"))
         .transpose()?;
 
     // Resolve all IDs
@@ -244,6 +166,8 @@ pub fn execute_defer(args: &DeferArgs, json: bool, cli: &config::CliOverrides) -
         }
     }
 
+    storage_ctx.flush_no_db_if_dirty()?;
+    storage_ctx.flush_no_db_if_dirty()?;
     Ok(())
 }
 
@@ -265,14 +189,14 @@ pub fn execute_undefer(args: &UndeferArgs, json: bool, cli: &config::CliOverride
     }
 
     let beads_dir = config::discover_beads_dir(None)?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let actor = config::resolve_actor(&config_layer);
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
-    let all_ids = storage.get_all_ids()?;
+    let all_ids = storage_ctx.storage.get_all_ids()?;
+    let storage = &mut storage_ctx.storage;
 
     // Resolve all IDs
     let resolved_ids = resolver.resolve_all(
@@ -371,7 +295,7 @@ mod tests {
     use crate::config::CliOverrides;
     use crate::model::{Issue, IssueType, Priority, Status};
     use crate::storage::SqliteStorage;
-    use chrono::Datelike;
+    use chrono::{Datelike, Duration, Local, Utc};
     use std::env;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -443,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_parse_defer_time_rfc3339() {
-        let result = parse_defer_time("2025-01-15T12:00:00Z").unwrap();
+        let result = parse_flexible_timestamp("2025-01-15T12:00:00Z", "defer_until").unwrap();
         assert_eq!(result.year(), 2025);
         assert_eq!(result.month(), 1);
         assert_eq!(result.day(), 15);
@@ -451,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_parse_defer_time_simple_date() {
-        let result = parse_defer_time("2025-06-20").unwrap();
+        let result = parse_flexible_timestamp("2025-06-20", "defer_until").unwrap();
         assert_eq!(result.year(), 2025);
         assert_eq!(result.month(), 6);
         assert_eq!(result.day(), 20);
@@ -460,7 +384,7 @@ mod tests {
     #[test]
     fn test_parse_defer_time_relative_hours() {
         let before = Utc::now();
-        let result = parse_defer_time("+2h").unwrap();
+        let result = parse_flexible_timestamp("+2h", "defer_until").unwrap();
         let after = Utc::now();
 
         // Result should be about 2 hours from now
@@ -471,7 +395,7 @@ mod tests {
     #[test]
     fn test_parse_defer_time_relative_days() {
         let before = Utc::now();
-        let result = parse_defer_time("+1d").unwrap();
+        let result = parse_flexible_timestamp("+1d", "defer_until").unwrap();
         let after = Utc::now();
 
         // Result should be about 1 day from now
@@ -482,7 +406,7 @@ mod tests {
     #[test]
     fn test_parse_defer_time_relative_weeks() {
         let before = Utc::now();
-        let result = parse_defer_time("+1w").unwrap();
+        let result = parse_flexible_timestamp("+1w", "defer_until").unwrap();
         let after = Utc::now();
 
         // Result should be about 1 week from now
@@ -492,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_parse_defer_time_tomorrow() {
-        let result = parse_defer_time("tomorrow").unwrap();
+        let result = parse_flexible_timestamp("tomorrow", "defer_until").unwrap();
         let expected_date = Local::now().date_naive() + Duration::days(1);
 
         // Check it's tomorrow (in UTC, might differ by a day due to timezone)
@@ -502,7 +426,7 @@ mod tests {
 
     #[test]
     fn test_parse_defer_time_next_week() {
-        let result = parse_defer_time("next-week").unwrap();
+        let result = parse_flexible_timestamp("next-week", "defer_until").unwrap();
         let expected_date = Local::now().date_naive() + Duration::weeks(1);
 
         let result_local = result.with_timezone(&Local);
@@ -511,14 +435,14 @@ mod tests {
 
     #[test]
     fn test_parse_defer_time_invalid() {
-        let result = parse_defer_time("invalid-time");
+        let result = parse_flexible_timestamp("invalid-time", "defer_until");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_defer_time_minutes() {
         let before = Utc::now();
-        let result = parse_defer_time("+30m").unwrap();
+        let result = parse_flexible_timestamp("+30m", "defer_until").unwrap();
         let after = Utc::now();
 
         // Result should be about 30 minutes from now

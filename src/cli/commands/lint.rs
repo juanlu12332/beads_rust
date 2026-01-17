@@ -77,7 +77,8 @@ const EPIC_SECTIONS: [RequiredSection; 1] = [RequiredSection {
 /// Returns an error if database access fails or filters are invalid.
 pub fn execute(args: &LintArgs, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (storage, _paths) = config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let storage = &storage_ctx.storage;
 
     let issues = if args.ids.is_empty() {
         let filters = build_filters(args)?;

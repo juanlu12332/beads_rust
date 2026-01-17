@@ -1,0 +1,5 @@
+---
+source: tests/snapshots/cli_output.rs
+expression: normalize_output(&output.stdout)
+---
+br version 0.1.0 (dev) (main@1bd98ec)

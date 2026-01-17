@@ -18,26 +18,29 @@ use tracing::{debug, info};
 /// Returns an error if database operations fail or if inputs are invalid.
 pub fn execute(command: &LabelCommands, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
-    let all_ids = storage.get_all_ids()?;
+    let all_ids = storage_ctx.storage.get_all_ids()?;
     let actor = config::resolve_actor(&config_layer);
+    let storage = &mut storage_ctx.storage;
 
     match command {
         LabelCommands::Add(args) => {
-            label_add(args, &mut storage, &resolver, &all_ids, &actor, json)
+            label_add(args, storage, &resolver, &all_ids, &actor, json)
         }
         LabelCommands::Remove(args) => {
-            label_remove(args, &mut storage, &resolver, &all_ids, &actor, json)
+            label_remove(args, storage, &resolver, &all_ids, &actor, json)
         }
-        LabelCommands::List(args) => label_list(args, &storage, &resolver, &all_ids, json),
-        LabelCommands::ListAll => label_list_all(&storage, json),
-        LabelCommands::Rename(args) => label_rename(args, &mut storage, &actor, json),
-    }
+        LabelCommands::List(args) => label_list(args, storage, &resolver, &all_ids, json),
+        LabelCommands::ListAll => label_list_all(storage, json),
+        LabelCommands::Rename(args) => label_rename(args, storage, &actor, json),
+    }?;
+
+    storage_ctx.flush_no_db_if_dirty()?;
+    Ok(())
 }
 
 /// JSON output for label add/remove operations.

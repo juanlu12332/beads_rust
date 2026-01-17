@@ -1,0 +1,56 @@
+---
+source: tests/snapshots/cli_output.rs
+expression: normalize_output(&output.stdout)
+---
+ID-REDACTED issue tracker (SQLite + JSONL)
+
+Usage: br [OPTIONS] <COMMAND>
+
+Commands:
+  init         Initialize a beads workspace
+  create       Create a new issue
+  q            Quick capture (create issue, print ID only)
+  list         List issues
+  show         Show issue details
+  update       Update an issue
+  close        Close an issue
+  reopen       Reopen an issue
+  delete       Delete an issue (creates tombstone)
+  ready        List ready issues (unblocked, not deferred)
+  blocked      List blocked issues
+  search       Search issues
+  dep          Manage dependencies
+  label        Manage labels
+  epic         Epic management commands
+  comments     Manage comments
+  stats        Show project statistics
+  status       Alias for stats
+  count        Count issues with optional grouping
+  stale        List stale issues
+  lint         Check issues for missing template sections
+  defer        Defer issues (schedule for later)
+  undefer      Undefer issues (make ready again)
+  config       Configuration management
+  sync         Sync database with JSONL file (export or import)
+  doctor       Run ID-REDACTED diagnostics
+  version      Show version information
+  upgrade      Upgrade br to the latest version
+  completions  Generate shell completions
+  history      Manage local history backups
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --db <DB>                      Database path (ID-REDACTED .beads/*.db if not set)
+      --actor <ACTOR>                Actor name for audit trail
+      --json                         Output as JSON
+      --ID-REDACTED                    Force direct mode (no daemon) - effectively no-op in br v1
+      --ID-REDACTED                Skip auto JSONL export
+      --ID-REDACTED               Skip auto import check
+      --ID-REDACTED                  Allow stale DB (bypass freshness check warning)
+      --ID-REDACTED <LOCK_TIMEOUT>  `SQLite` busy timeout in ms
+      --no-db                        ID-REDACTED mode (no DB connection)
+  -v, --verbose...                   Increase logging verbosity (-v, -vv)
+  -q, --quiet                        Quiet mode (no output except errors)
+      --ID-REDACTED                     Disable colored output
+  -h, --help                         Print help
+  -V, --version                      Print version

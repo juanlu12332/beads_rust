@@ -33,12 +33,12 @@ pub fn execute(args: QuickArgs, cli: &config::CliOverrides) -> Result<()> {
     }
 
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
-    let layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
+    let layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let id_config = config::id_config_from_layer(&layer);
     let default_priority = config::default_priority_from_layer(&layer)?;
     let default_issue_type = config::default_issue_type_from_layer(&layer)?;
+    let storage = &mut storage_ctx.storage;
 
     let priority = if let Some(p) = args.priority {
         Priority::from_str(&p)?
@@ -118,5 +118,6 @@ pub fn execute(args: QuickArgs, cli: &config::CliOverrides) -> Result<()> {
 
     println!("{}", issue.id);
 
+    storage_ctx.flush_no_db_if_dirty()?;
     Ok(())
 }

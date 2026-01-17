@@ -6,6 +6,7 @@ use crate::error::{BeadsError, Result};
 use crate::model::{DependencyType, Issue, Status};
 use crate::storage::{IssueUpdate, SqliteStorage};
 use crate::util::id::{IdResolver, ResolverConfig};
+use crate::util::time::parse_flexible_timestamp;
 use crate::validation::LabelValidator;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -40,13 +41,12 @@ impl From<&Issue> for UpdatedIssueOutput {
 pub fn execute(args: &UpdateArgs, cli: &config::CliOverrides) -> Result<()> {
     let json = cli.json.unwrap_or(false);
     let beads_dir = config::discover_beads_dir(None)?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let actor = config::resolve_actor(&config_layer);
-    let resolver = build_resolver(&config_layer, &storage);
-    let resolved_ids = resolve_target_ids(args, &beads_dir, &resolver, &storage)?;
+    let resolver = build_resolver(&config_layer, &storage_ctx.storage);
+    let resolved_ids = resolve_target_ids(args, &beads_dir, &resolver, &storage_ctx.storage)?;
 
     let update = build_update(args, &actor)?;
     let has_updates = !update.is_empty()
@@ -56,6 +56,8 @@ pub fn execute(args: &UpdateArgs, cli: &config::CliOverrides) -> Result<()> {
         || args.parent.is_some();
 
     let mut updated_issues: Vec<UpdatedIssueOutput> = Vec::new();
+
+    let storage = &mut storage_ctx.storage;
 
     for id in &resolved_ids {
         // Get issue before update for change tracking
@@ -102,7 +104,7 @@ pub fn execute(args: &UpdateArgs, cli: &config::CliOverrides) -> Result<()> {
         }
 
         // Apply parent
-        apply_parent_update(&mut storage, id, args.parent.as_deref(), &resolver, &actor)?;
+        apply_parent_update(storage, id, args.parent.as_deref(), &resolver, &actor)?;
 
         // Update last touched
         crate::util::set_last_touched_id(&beads_dir, id);
@@ -126,6 +128,7 @@ pub fn execute(args: &UpdateArgs, cli: &config::CliOverrides) -> Result<()> {
         println!("{json_output}");
     }
 
+    storage_ctx.flush_no_db_if_dirty()?;
     Ok(())
 }
 
@@ -319,10 +322,7 @@ fn apply_parent_update(
 }
 
 fn parse_date(s: &str) -> Result<DateTime<Utc>> {
-    // Basic RFC3339 parsing for now
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|_| BeadsError::validation("date", "invalid format (expected RFC3339)"))
+    parse_flexible_timestamp(s, "date")
 }
 
 #[cfg(test)]
@@ -403,9 +403,13 @@ mod tests {
 
     #[test]
     fn test_parse_date_partial_date() {
-        // Partial dates without time should fail
+        // Partial dates without time should now succeed
         let result = parse_date("2024-01-15");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        let date = result.unwrap();
+        assert_eq!(date.year(), 2024);
+        assert_eq!(date.month(), 1);
+        assert_eq!(date.day(), 15);
     }
 
     #[test]

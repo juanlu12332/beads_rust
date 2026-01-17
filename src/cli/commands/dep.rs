@@ -19,26 +19,24 @@ use std::path::{Path, PathBuf};
 /// Returns an error if database operations fail or if inputs are invalid.
 pub fn execute(command: &DepCommands, json: bool, cli: &config::CliOverrides) -> Result<()> {
     let beads_dir = config::discover_beads_dir(Some(Path::new(".")))?;
-    let (mut storage, _paths) =
-        config::open_storage(&beads_dir, cli.db.as_ref(), cli.lock_timeout)?;
+    let mut storage_ctx = config::open_storage_with_cli(&beads_dir, cli)?;
 
-    let config_layer = config::load_config(&beads_dir, Some(&storage), cli)?;
+    let config_layer = config::load_config(&beads_dir, Some(&storage_ctx.storage), cli)?;
     let id_config = config::id_config_from_layer(&config_layer);
     let resolver = IdResolver::new(ResolverConfig::with_prefix(id_config.prefix));
-    let all_ids = storage.get_all_ids()?;
+    let all_ids = storage_ctx.storage.get_all_ids()?;
+    let storage = &mut storage_ctx.storage;
 
     let actor = config::resolve_actor(&config_layer);
 
     let external_db_paths = config::external_project_db_paths(&config_layer, &beads_dir);
 
     match command {
-        DepCommands::Add(args) => dep_add(args, &mut storage, &resolver, &all_ids, &actor, json),
-        DepCommands::Remove(args) => {
-            dep_remove(args, &mut storage, &resolver, &all_ids, &actor, json)
-        }
+        DepCommands::Add(args) => dep_add(args, storage, &resolver, &all_ids, &actor, json),
+        DepCommands::Remove(args) => dep_remove(args, storage, &resolver, &all_ids, &actor, json),
         DepCommands::List(args) => dep_list(
             args,
-            &storage,
+            storage,
             &resolver,
             &all_ids,
             &external_db_paths,
@@ -46,14 +44,17 @@ pub fn execute(command: &DepCommands, json: bool, cli: &config::CliOverrides) ->
         ),
         DepCommands::Tree(args) => dep_tree(
             args,
-            &storage,
+            storage,
             &resolver,
             &all_ids,
             &external_db_paths,
             json,
         ),
-        DepCommands::Cycles(args) => dep_cycles(args, &storage, json),
-    }
+        DepCommands::Cycles(args) => dep_cycles(args, storage, json),
+    }?;
+
+    storage_ctx.flush_no_db_if_dirty()?;
+    Ok(())
 }
 
 /// JSON output for dep add/remove operations

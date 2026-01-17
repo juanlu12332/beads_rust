@@ -1,0 +1,6 @@
+---
+source: tests/snapshots/cli_output.rs
+expression: normalized
+---
+Error: no beads directory found
+Hint: run `br init` to create a .beads directory
