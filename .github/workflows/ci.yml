@@ -6,9 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Faster builds with sparse registry protocol
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
 jobs:
   check:
@@ -23,25 +30,49 @@ jobs:
           toolchain: nightly
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-check-
             ${{ runner.os }}-cargo-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy
+      - name: Clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
       - name: Check (all targets)
-        run: cargo check --all-targets
+        run: cargo check --all-targets --all-features
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Security audit
+        run: cargo audit --deny warnings
+        continue-on-error: true  # Advisory-only for now
+
+      - name: Check for yanked dependencies
+        run: cargo audit --deny yanked
 
   test:
     name: Test Suite
@@ -55,21 +86,27 @@ jobs:
         with:
           toolchain: nightly
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-test-
             ${{ runner.os }}-cargo-
 
-      - name: Run all tests
+      - name: Run all tests (all features)
         run: cargo test --all-features -- --nocapture
         env:
           RUST_LOG: beads_rust=debug
+
+      - name: Run tests (no default features)
+        run: cargo test --no-default-features
 
       - name: Run doc tests
         run: cargo test --doc
@@ -86,6 +123,20 @@ jobs:
         with:
           toolchain: nightly
           components: llvm-tools-preview
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cov-
+            ${{ runner.os }}-cargo-
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -127,19 +178,30 @@ jobs:
           toolchain: nightly
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-build-
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify binary runs (Unix)
+        if: runner.os != 'Windows'
+        run: ./target/${{ matrix.target }}/release/br --version
+
+      - name: Verify binary runs (Windows)
+        if: runner.os == 'Windows'
+        run: ./target/${{ matrix.target }}/release/br.exe --version
 
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
@@ -168,17 +230,58 @@ jobs:
         with:
           toolchain: nightly
 
-      - name: Cache cargo registry
+      - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
           key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
 
       - name: Run benchmarks
         run: cargo bench --bench storage_perf -- --noplot
         continue-on-error: true
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          if-no-files-found: ignore
+
+  # Verify version auditing info is correctly embedded
+  version-audit:
+    name: Version Audit
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: br-x86_64-unknown-linux-gnu
+          path: ./bin
+
+      - name: Make binary executable
+        run: chmod +x ./bin/br
+
+      - name: Verify version info
+        run: |
+          echo "=== Version output ==="
+          ./bin/br --version
+          echo ""
+          echo "=== Checking for build info ==="
+          VERSION_OUTPUT=$(./bin/br --version 2>&1 || true)
+          # Verify it contains expected version info
+          if echo "$VERSION_OUTPUT" | grep -q "br\|beads"; then
+            echo "Version info present"
+          else
+            echo "Warning: Version output may be missing expected info"
+          fi
