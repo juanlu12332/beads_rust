@@ -807,12 +807,7 @@ fn execute_merge(
     let context = MergeContext::new(base, left, right);
     // TODO: support configurable conflict strategy via CLI args if needed
     let strategy = ConflictResolution::PreferNewer; 
-    let tombstones = if args.force {
-        None 
-    } else {
-        // We implicitly respect tombstones by default in merge logic
-        None
-    };
+    let tombstones = None;
 
     let report = three_way_merge(&context, strategy, tombstones);
 
@@ -834,7 +829,7 @@ fn execute_merge(
         return Err(BeadsError::Config(msg));
     }
 
-    let actor = cli.actor.as_deref().unwrap_or("br");
+    let _actor = cli.actor.as_deref().unwrap_or("br");
 
     // Apply deletions
     for id in &report.deleted {

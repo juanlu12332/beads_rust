@@ -1113,7 +1113,7 @@ pub struct SyncArgs {
     /// Perform a 3-way merge (Base + Local DB + Remote JSONL)
     ///
     /// Reconciles changes when both the database and JSONL have been modified.
-    /// Uses .beads/base_snapshot.jsonl as the common ancestor.
+    /// Uses `.beads/base_snapshot.jsonl` as the common ancestor.
     #[arg(long)]
     pub merge: bool,
 

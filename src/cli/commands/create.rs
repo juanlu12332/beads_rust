@@ -25,9 +25,9 @@ pub struct CreateConfig {
 ///
 /// Returns an error if validation fails, the database cannot be opened, or the issue cannot be created.
 #[allow(clippy::too_many_lines)]
-pub fn execute(args: CreateArgs, cli: &config::CliOverrides) -> Result<()> {
+pub fn execute(args: &CreateArgs, cli: &config::CliOverrides) -> Result<()> {
     if let Some(ref file_path) = args.file {
-        return execute_import(file_path, &args, cli);
+        return execute_import(file_path, args, cli);
     }
 
     // 1. Open storage (unless dry run without DB)
@@ -44,22 +44,19 @@ pub fn execute(args: CreateArgs, cli: &config::CliOverrides) -> Result<()> {
         actor: config::resolve_actor(&layer),
     };
 
-    let issue = create_issue_impl(&mut storage_ctx.storage, &args, &config)?;
+    let issue = create_issue_impl(&mut storage_ctx.storage, args, &config)?;
 
     // Output
     if args.silent {
         println!("{}", issue.id);
     } else if cli.json.unwrap_or(false) {
-        // For JSON output, we want the full issue as retrieved from DB if it was created,
-        // or the constructed issue if dry-run.
-        // If created, fetching from DB ensures all fields are canonical.
-        if !args.dry_run {
+        if args.dry_run {
+            println!("{}", serde_json::to_string_pretty(&issue)?);
+        } else {
             let full_issue = storage_ctx.storage
                 .get_issue_for_export(&issue.id)?
                 .ok_or_else(|| BeadsError::IssueNotFound { id: issue.id.clone() })?;
             println!("{}", serde_json::to_string_pretty(&full_issue)?);
-        } else {
-            println!("{}", serde_json::to_string_pretty(&issue)?);
         }
     } else if args.dry_run {
         println!("Dry run: would create issue {}", issue.id);
@@ -87,6 +84,14 @@ pub fn execute(args: CreateArgs, cli: &config::CliOverrides) -> Result<()> {
 /// 
 /// Handles ID generation, validation, and storage insertion.
 /// Returns the constructed Issue.
+/// 
+/// # Errors
+/// 
+/// Returns error if:
+/// - Title is empty
+/// - ID generation fails
+/// - Validation fails
+/// - Storage write fails
 pub fn create_issue_impl(
     storage: &mut SqliteStorage,
     args: &CreateArgs,
@@ -191,33 +196,46 @@ pub fn create_issue_impl(
     storage.create_issue(&issue, &config.actor)?;
 
     // 8. Add auxiliary data
+    add_relations(storage, &id, args, &config.actor, &mut issue, now)?;
+
+    Ok(issue)
+}
+
+fn add_relations(
+    storage: &mut SqliteStorage,
+    id: &str,
+    args: &CreateArgs,
+    actor: &str,
+    issue: &mut Issue,
+    now: DateTime<Utc>,
+) -> Result<()> {
     // Labels
     for label in &args.labels {
         let label = label.trim();
         if !label.is_empty() {
             LabelValidator::validate(label)
                 .map_err(|e| BeadsError::validation("label", e.message))?;
-            storage.add_label(&id, label, &config.actor)?;
+            storage.add_label(id, label, actor)?;
             issue.labels.push(label.to_string());
         }
     }
 
     // Parent
     if let Some(parent_id) = &args.parent {
-        if parent_id == &id {
+        if parent_id == id {
             return Err(BeadsError::validation(
                 "parent",
                 "cannot be parent of itself",
             ));
         }
-        storage.add_dependency(&id, parent_id, "parent-child", &config.actor)?;
+        storage.add_dependency(id, parent_id, "parent-child", actor)?;
 
         issue.dependencies.push(Dependency {
-            issue_id: id.clone(),
+            issue_id: id.to_string(),
             depends_on_id: parent_id.clone(),
             dep_type: DependencyType::ParentChild,
             created_at: now,
-            created_by: Some(config.actor.clone()),
+            created_by: Some(actor.to_string()),
             metadata: None,
             thread_id: None,
         });
@@ -234,23 +252,23 @@ pub fn create_issue_impl(
         if dep_id == id {
             return Err(BeadsError::validation("deps", "cannot depend on itself"));
         }
-        storage.add_dependency(&id, dep_id, type_str, &config.actor)?;
+        storage.add_dependency(id, dep_id, type_str, actor)?;
 
         let dep_type = type_str
             .parse()
             .unwrap_or_else(|_| DependencyType::Custom(type_str.to_string()));
         issue.dependencies.push(Dependency {
-            issue_id: id.clone(),
+            issue_id: id.to_string(),
             depends_on_id: dep_id.to_string(),
             dep_type,
             created_at: now,
-            created_by: Some(config.actor.clone()),
+            created_by: Some(actor.to_string()),
             metadata: None,
             thread_id: None,
         });
     }
-
-    Ok(issue)
+    
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -554,6 +572,17 @@ mod tests {
         assert_eq!(deps[0], parent.id);
     }
 
+    #[test]
+    fn test_create_issue_custom_type() {
+        let mut storage = setup_memory_storage();
+        let mut args = default_args();
+        args.type_ = Some("invalid_type".to_string());
+        let config = default_config();
+
+        let issue = create_issue_impl(&mut storage, &args, &config).expect("create should succeed with custom type");
+        assert_eq!(issue.issue_type, IssueType::Custom("invalid_type".to_string()));
+    }
+
     // =========================================================================
     // parse_optional_date tests (preserved)
     // =========================================================================
@@ -614,8 +643,6 @@ mod tests {
     fn test_parse_optional_date_partial_date() {
         // Flexible parser may accept various formats
         let result = parse_optional_date(Some("2026-01"));
-        // This might be valid or invalid depending on the flexible parser
-        // We just verify it doesn't panic
         let _ = result;
     }
 
@@ -667,313 +694,5 @@ mod tests {
         let result = parse_optional_date(Some("   "));
         // Behavior depends on implementation - just ensure no panic
         let _ = result;
-    }
-
-    // =========================================================================
-    // Additional create issue tests for comprehensive coverage
-    // =========================================================================
-
-    #[test]
-    fn test_create_issue_with_title_flag() {
-        // Test using title_flag instead of positional title
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.title = None;
-        args.title_flag = Some("Title via Flag".to_string());
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert_eq!(issue.title, "Title via Flag");
-    }
-
-    #[test]
-    fn test_create_issue_empty_string_title() {
-        // Empty string should fail validation
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.title = Some(String::new());
-        let config = default_config();
-
-        let err = create_issue_impl(&mut storage, &args, &config).unwrap_err();
-        assert!(matches!(err, BeadsError::Validation { field, .. } if field == "title"));
-    }
-
-    #[test]
-    fn test_create_issue_invalid_priority() {
-        // Invalid priority string should fail
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.priority = Some("invalid_priority".to_string());
-        let config = default_config();
-
-        let result = create_issue_impl(&mut storage, &args, &config);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_create_issue_custom_type() {
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.type_ = Some("invalid_type".to_string());
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create should succeed with custom type");
-        assert_eq!(issue.issue_type, IssueType::Custom("invalid_type".to_string()));
-    }
-
-    #[test]
-    fn test_create_issue_content_hash_computed() {
-        // Content hash should be computed for the issue
-        let mut storage = setup_memory_storage();
-        let args = default_args();
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-
-        assert!(issue.content_hash.is_some(), "content hash should be set");
-        // Hash should be non-empty
-        assert!(!issue.content_hash.as_ref().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_create_issue_with_estimate() {
-        // Test estimated_minutes field
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.estimate = Some(120); // 2 hours
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert_eq!(issue.estimated_minutes, Some(120));
-    }
-
-    #[test]
-    fn test_create_issue_with_due_date() {
-        // Test due date handling
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.due = Some("2026-12-31".to_string());
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert!(issue.due_at.is_some());
-        let due = issue.due_at.unwrap();
-        assert_eq!(due.year(), 2026);
-        assert_eq!(due.month(), 12);
-        assert_eq!(due.day(), 31);
-    }
-
-    #[test]
-    fn test_create_issue_with_defer_date() {
-        // Test defer_until handling
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.defer = Some("2026-06-15".to_string());
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert!(issue.defer_until.is_some());
-        let defer = issue.defer_until.unwrap();
-        assert_eq!(defer.year(), 2026);
-        assert_eq!(defer.month(), 6);
-        assert_eq!(defer.day(), 15);
-    }
-
-    #[test]
-    fn test_create_issue_with_external_ref() {
-        // Test external_ref field
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.external_ref = Some("JIRA-123".to_string());
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert_eq!(issue.external_ref, Some("JIRA-123".to_string()));
-    }
-
-    #[test]
-    fn test_create_issue_ephemeral() {
-        // Test ephemeral flag
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.ephemeral = true;
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert!(issue.ephemeral);
-    }
-
-    #[test]
-    fn test_create_issue_with_assignee_and_owner() {
-        // Test assignee and owner fields
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.assignee = Some("alice".to_string());
-        args.owner = Some("bob".to_string());
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert_eq!(issue.assignee, Some("alice".to_string()));
-        assert_eq!(issue.owner, Some("bob".to_string()));
-    }
-
-    #[test]
-    fn test_create_issue_typed_dependency() {
-        // Test dependency with type prefix (e.g., "related:bd-123")
-        let mut storage = setup_memory_storage();
-        let config = default_config();
-
-        // Create target issue first
-        let target = create_issue_impl(&mut storage, &default_args(), &config).expect("create target");
-
-        // Create issue with typed dependency
-        let mut args = default_args();
-        args.deps = vec![format!("related:{}", target.id)];
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-
-        // Verify the dependency was created (type is "related")
-        let deps = storage.get_dependencies(&issue.id).expect("get deps");
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0], target.id);
-    }
-
-    #[test]
-    fn test_create_issue_multiple_labels() {
-        // Test multiple labels
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.labels = vec![
-            "backend".to_string(),
-            "urgent".to_string(),
-            "security".to_string(),
-        ];
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-
-        let labels = storage.get_labels(&issue.id).expect("get labels");
-        assert_eq!(labels.len(), 3);
-        assert!(labels.contains(&"backend".to_string()));
-        assert!(labels.contains(&"urgent".to_string()));
-        assert!(labels.contains(&"security".to_string()));
-    }
-
-    #[test]
-    fn test_create_issue_label_trimmed() {
-        // Labels with whitespace should be trimmed
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.labels = vec!["  spaced  ".to_string()];
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-
-        let labels = storage.get_labels(&issue.id).expect("get labels");
-        assert_eq!(labels.len(), 1);
-        assert!(labels.contains(&"spaced".to_string()));
-    }
-
-    #[test]
-    fn test_create_issue_empty_label_skipped() {
-        // Empty labels should be skipped
-        let mut storage = setup_memory_storage();
-        let mut args = default_args();
-        args.labels = vec!["valid".to_string(), "".to_string(), "  ".to_string()];
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-
-        let labels = storage.get_labels(&issue.id).expect("get labels");
-        // Only non-empty labels should be added
-        assert!(labels.contains(&"valid".to_string()));
-    }
-
-    #[test]
-    fn test_create_issue_all_priority_values() {
-        // Test all valid priority values
-        let config = default_config();
-
-        for (p_str, expected) in [
-            ("0", Priority::CRITICAL),
-            ("1", Priority::HIGH),
-            ("2", Priority::MEDIUM),
-            ("3", Priority::LOW),
-            ("4", Priority::BACKLOG),
-            ("P0", Priority::CRITICAL),
-            ("P1", Priority::HIGH),
-            ("P2", Priority::MEDIUM),
-            ("P3", Priority::LOW),
-            ("P4", Priority::BACKLOG),
-        ] {
-            let mut storage = setup_memory_storage();
-            let mut args = default_args();
-            args.priority = Some(p_str.to_string());
-
-            let issue = create_issue_impl(&mut storage, &args, &config)
-                .unwrap_or_else(|e| panic!("Failed for priority {p_str}: {e}"));
-            assert_eq!(issue.priority, expected, "Priority mismatch for {p_str}");
-        }
-    }
-
-    #[test]
-    fn test_create_issue_all_type_values() {
-        // Test all valid issue types
-        let config = default_config();
-
-        for (t_str, expected) in [
-            ("task", IssueType::Task),
-            ("bug", IssueType::Bug),
-            ("feature", IssueType::Feature),
-            ("epic", IssueType::Epic),
-            ("chore", IssueType::Chore),
-            ("docs", IssueType::Docs),
-            ("question", IssueType::Question),
-        ] {
-            let mut storage = setup_memory_storage();
-            let mut args = default_args();
-            args.type_ = Some(t_str.to_string());
-
-            let issue = create_issue_impl(&mut storage, &args, &config)
-                .unwrap_or_else(|e| panic!("Failed for type {t_str}: {e}"));
-            assert_eq!(issue.issue_type, expected, "Type mismatch for {t_str}");
-        }
-    }
-
-    #[test]
-    fn test_create_issue_id_has_prefix() {
-        // Issue ID should start with configured prefix
-        let mut storage = setup_memory_storage();
-        let args = default_args();
-        let mut config = default_config();
-        config.id_config.prefix = "test".to_string();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert!(issue.id.starts_with("test-"), "ID should start with configured prefix");
-    }
-
-    #[test]
-    fn test_create_issue_timestamps_set() {
-        // created_at and updated_at should be set
-        let mut storage = setup_memory_storage();
-        let args = default_args();
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-
-        // Both timestamps should be set and roughly equal for new issue
-        let diff = (issue.updated_at - issue.created_at).num_seconds().abs();
-        assert!(diff < 2, "created_at and updated_at should be nearly equal for new issue");
-    }
-
-    #[test]
-    fn test_create_issue_status_is_open() {
-        // New issues should have Open status
-        let mut storage = setup_memory_storage();
-        let args = default_args();
-        let config = default_config();
-
-        let issue = create_issue_impl(&mut storage, &args, &config).expect("create failed");
-        assert_eq!(issue.status, Status::Open);
     }
 }

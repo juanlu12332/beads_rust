@@ -24,8 +24,12 @@ fn main() {
     let is_mutating = is_mutating_command(&cli.command);
 
     let result = match cli.command {
-        Commands::Init { prefix, force, .. } => commands::init::execute(prefix, force, None),
-        Commands::Create(args) => commands::create::execute(args, &overrides),
+        Commands::Init {
+            prefix,
+            force,
+            backend: _,
+        } => commands::init::execute(prefix, force, None),
+        Commands::Create(args) => commands::create::execute(&args, &overrides),
         Commands::Update(args) => commands::update::execute(&args, &overrides),
         Commands::Delete(args) => commands::delete::execute(&args, &overrides),
         Commands::List(args) => commands::list::execute(&args, cli.json, &overrides),

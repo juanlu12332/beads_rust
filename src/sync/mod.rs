@@ -2486,8 +2486,8 @@ pub struct MergeConfig {
 /// # Errors
 ///
 /// Returns an error if the file cannot be written.
-pub fn save_base_snapshot(
-    issues: &std::collections::HashMap<String, Issue>,
+pub fn save_base_snapshot<S: ::std::hash::BuildHasher>(
+    issues: &std::collections::HashMap<String, Issue, S>,
     jsonl_dir: &Path,
 ) -> Result<()> {
     let snapshot_path = jsonl_dir.join("beads.base.jsonl");
