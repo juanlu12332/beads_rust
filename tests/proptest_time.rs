@@ -273,8 +273,7 @@ fn keyword_tomorrow_is_future() {
     let diff = parsed - now;
     assert!(
         diff > Duration::zero() && diff < Duration::hours(48),
-        "tomorrow should be 0-48 hours away (got {:?})",
-        diff
+        "tomorrow should be 0-48 hours away (got {diff:?})"
     );
 
     info!("proptest_tomorrow: PASS");
