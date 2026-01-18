@@ -112,6 +112,39 @@ impl SchemaWorkspace {
     }
 }
 
+/// Check if both br (release binary) and bd are available for schema comparison tests
+fn binaries_available() -> bool {
+    // Check br release binary exists
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let manifest_dir =
+                std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(manifest_dir).join("target")
+        });
+    let br_path = target_dir.join("release").join("br");
+    let br_exists = br_path.exists();
+
+    // Check bd is available
+    let bd_available = Command::new("bd")
+        .arg("version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+
+    br_exists && bd_available
+}
+
+/// Skip test if br release binary or bd is not available (used in CI)
+macro_rules! skip_if_no_binaries {
+    () => {
+        if !binaries_available() {
+            eprintln!("Skipping test: 'br' release binary or 'bd' not found (expected in CI)");
+            return;
+        }
+    };
+}
+
 fn run_binary(binary: &str, cwd: &PathBuf, args: &[&str]) -> CmdOutput {
     let cmd_path = if binary == "br" {
         // Use cargo-built binary, respecting CARGO_TARGET_DIR if set
@@ -721,6 +754,7 @@ const KNOWN_NOTNULL_DIFFERENCES: &[&str] = &[
 
 #[test]
 fn conformance_schema_tables_present() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_schema_tables_present test");
 
@@ -780,6 +814,7 @@ fn conformance_schema_tables_present() {
 
 #[test]
 fn conformance_schema_issues_columns() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_schema_issues_columns test");
 
@@ -851,6 +886,7 @@ fn conformance_schema_issues_columns() {
 
 #[test]
 fn conformance_schema_dependencies_structure() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_schema_dependencies_structure test");
 
@@ -885,6 +921,7 @@ fn conformance_schema_dependencies_structure() {
 
 #[test]
 fn conformance_schema_labels_comments() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_schema_labels_comments test");
 
@@ -942,6 +979,7 @@ fn conformance_schema_labels_comments() {
 
 #[test]
 fn conformance_schema_indexes() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_schema_indexes test");
 
@@ -986,6 +1024,7 @@ fn conformance_schema_indexes() {
 
 #[test]
 fn conformance_metadata_json_structure() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_metadata_json_structure test");
 
@@ -1002,6 +1041,7 @@ fn conformance_metadata_json_structure() {
 
 #[test]
 fn conformance_jsonl_field_parity() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_jsonl_field_parity test");
 
@@ -1029,6 +1069,7 @@ fn conformance_jsonl_field_parity() {
 
 #[test]
 fn conformance_jsonl_compaction_level_serialization() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_jsonl_compaction_level_serialization test");
 
@@ -1114,6 +1155,7 @@ fn is_known_column_diff(diff: &ColumnDiff) -> bool {
 
 #[test]
 fn conformance_schema_full_comparison() {
+    skip_if_no_binaries!();
     common::init_test_logging();
     info!("Starting conformance_schema_full_comparison test");
 
