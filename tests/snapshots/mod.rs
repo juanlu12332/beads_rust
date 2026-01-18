@@ -51,9 +51,8 @@ static TS_FULL_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DATE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\d{4}-\d{2}-\d{2}").expect("date regex"));
-static VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\((main|master|HEAD)@[a-f0-9]+\)").expect("version regex")
-});
+static VERSION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\((main|master|HEAD)@[a-f0-9]+\)").expect("version regex"));
 static OWNER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Owner: [a-zA-Z0-9_-]+").expect("owner regex"));
 static VERSION_NUM_RE: LazyLock<Regex> =
