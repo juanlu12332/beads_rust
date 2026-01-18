@@ -88,6 +88,17 @@ fn main() {
         }
         Commands::Query { command } => commands::query::execute(&command, cli.json, &overrides),
         Commands::Graph(args) => commands::graph::execute(&args, cli.json, &overrides),
+        Commands::Agents(args) => {
+            let agents_args = commands::agents::AgentsArgs {
+                add: args.add,
+                remove: args.remove,
+                update: args.update,
+                check: args.check,
+                dry_run: args.dry_run,
+                force: args.force,
+            };
+            commands::agents::execute(&agents_args, cli.json)
+        }
     };
 
     // Handle command result

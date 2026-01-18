@@ -242,6 +242,9 @@ EXAMPLES:
 
     /// Visualize dependency graph
     Graph(GraphArgs),
+
+    /// Manage AGENTS.md workflow instructions
+    Agents(AgentsArgs),
 }
 
 /// Arguments for the completions command.
@@ -1410,4 +1413,33 @@ pub struct GraphArgs {
     /// One line per issue (compact output)
     #[arg(long)]
     pub compact: bool,
+}
+
+/// Arguments for the agents command.
+#[derive(Args, Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AgentsArgs {
+    /// Add beads workflow instructions to AGENTS.md
+    #[arg(long)]
+    pub add: bool,
+
+    /// Remove beads workflow instructions from AGENTS.md
+    #[arg(long)]
+    pub remove: bool,
+
+    /// Update beads workflow instructions to latest version
+    #[arg(long)]
+    pub update: bool,
+
+    /// Check status only (default behavior)
+    #[arg(long)]
+    pub check: bool,
+
+    /// Preview changes without modifying files
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip confirmation prompts
+    #[arg(long, short = 'f')]
+    pub force: bool,
 }
