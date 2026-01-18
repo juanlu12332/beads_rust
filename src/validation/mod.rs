@@ -267,14 +267,22 @@ pub fn is_valid_id_format(id: &str) -> bool {
         return false;
     }
 
-    if hash.is_empty() || hash.len() > 25 {
+    // Allow longer hashes for hierarchical IDs (e.g., "0v1.1.1.1")
+    if hash.is_empty() || hash.len() > 40 {
         return false;
     }
 
+    // Allow dots for hierarchical/child IDs (e.g., "bd-abc.1", "bd-abc.1.2")
+    // Format: hash[.child_num]* where child_num is numeric
     if !hash
         .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.')
     {
+        return false;
+    }
+
+    // Dots must be followed by at least one character (no trailing/leading/double dots)
+    if hash.starts_with('.') || hash.ends_with('.') || hash.contains("..") {
         return false;
     }
 
@@ -684,13 +692,16 @@ mod tests {
         assert!(!is_valid_id_format("bd-ABC"));
         // 1 char hash is now allowed (min 1)
         assert!(is_valid_id_format("bd-1"));
-        // 9 char hash is now allowed (max 25)
+        // 9 char hash is allowed (max 40 for hierarchical IDs)
         assert!(is_valid_id_format("bd-abc123456"));
 
         assert!(!is_valid_id_format("bd_abc"));
 
-        // Too long (26 chars)
-        assert!(!is_valid_id_format("bd-abc12345678901234567890123456"));
+        // 26 char hash is now valid (within max 40)
+        assert!(is_valid_id_format("bd-abc12345678901234567890123456"));
+
+        // Too long (41 chars) - exceeds max 40
+        assert!(!is_valid_id_format("bd-abc123456789012345678901234567890123456789"));
     }
 
     #[test]
