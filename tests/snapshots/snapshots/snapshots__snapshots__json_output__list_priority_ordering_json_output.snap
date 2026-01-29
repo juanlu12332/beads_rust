@@ -1,0 +1,51 @@
+---
+source: tests/snapshots/json_output.rs
+expression: normalized
+---
+[
+  {
+    "id": "ISSUE_ID",
+    "title": "Critical task",
+    "status": "open",
+    "priority": 0,
+    "issue_type": "task",
+    "created_at": "TIMESTAMP",
+    "created_by": "ACTOR",
+    "updated_at": "TIMESTAMP",
+    "source_repo": ".",
+    "compaction_level": 0,
+    "original_size": 0,
+    "dependency_count": 0,
+    "dependent_count": 0
+  },
+  {
+    "id": "ISSUE_ID",
+    "title": "High priority task",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "created_at": "TIMESTAMP",
+    "created_by": "ACTOR",
+    "updated_at": "TIMESTAMP",
+    "source_repo": ".",
+    "compaction_level": 0,
+    "original_size": 0,
+    "dependency_count": 0,
+    "dependent_count": 0
+  },
+  {
+    "id": "ISSUE_ID",
+    "title": "Low priority task",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "created_at": "TIMESTAMP",
+    "created_by": "ACTOR",
+    "updated_at": "TIMESTAMP",
+    "source_repo": ".",
+    "compaction_level": 0,
+    "original_size": 0,
+    "dependency_count": 0,
+    "dependent_count": 0
+  }
+]

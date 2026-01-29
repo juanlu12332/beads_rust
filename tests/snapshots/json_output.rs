@@ -407,3 +407,344 @@ fn snapshot_graph_json() {
     let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
     assert_json_snapshot!("graph_json_output", normalize_json(&json));
 }
+
+// ============================================================================
+// Edge Cases: Empty Results
+// ============================================================================
+
+#[test]
+fn snapshot_list_empty_json() {
+    let workspace = init_workspace();
+
+    let output = run_br(&workspace, ["list", "--json"], "list_empty_json");
+    assert!(
+        output.status.success(),
+        "list empty json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("list_empty_json_output", normalize_json(&json));
+}
+
+#[test]
+fn snapshot_ready_empty_json() {
+    let workspace = init_workspace();
+
+    let output = run_br(&workspace, ["ready", "--json"], "ready_empty_json");
+    assert!(
+        output.status.success(),
+        "ready empty json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("ready_empty_json_output", normalize_json(&json));
+}
+
+#[test]
+fn snapshot_blocked_empty_json() {
+    let workspace = init_workspace();
+
+    let output = run_br(&workspace, ["blocked", "--json"], "blocked_empty_json");
+    assert!(
+        output.status.success(),
+        "blocked empty json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("blocked_empty_json_output", normalize_json(&json));
+}
+
+#[test]
+fn snapshot_search_no_match_json() {
+    let workspace = init_workspace();
+    create_issue(&workspace, "Existing issue", "create_for_search_miss");
+
+    let output = run_br(
+        &workspace,
+        ["search", "nonexistent_xyz", "--json"],
+        "search_no_match_json",
+    );
+    assert!(
+        output.status.success(),
+        "search no match json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("search_no_match_json_output", normalize_json(&json));
+}
+
+#[test]
+fn snapshot_stale_empty_json() {
+    let workspace = init_workspace();
+
+    let output = run_br(
+        &workspace,
+        ["stale", "--days", "0", "--json"],
+        "stale_empty_json",
+    );
+    assert!(
+        output.status.success(),
+        "stale empty json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("stale_empty_json_output", normalize_json(&json));
+}
+
+#[test]
+fn snapshot_count_empty_json() {
+    let workspace = init_workspace();
+
+    let output = run_br(&workspace, ["count", "--json"], "count_empty_json");
+    assert!(
+        output.status.success(),
+        "count empty json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("count_empty_json_output", normalize_json(&json));
+}
+
+// ============================================================================
+// Ordering Guarantees
+// ============================================================================
+
+#[test]
+fn snapshot_list_priority_ordering_json() {
+    let workspace = init_workspace();
+
+    // Create issues with different priorities (lower number = higher priority)
+    let id_low = create_issue(&workspace, "Low priority task", "create_low_prio");
+    let id_high = create_issue(&workspace, "High priority task", "create_high_prio");
+    let id_crit = create_issue(&workspace, "Critical task", "create_crit_prio");
+
+    let _ = run_br(
+        &workspace,
+        ["update", &id_low, "--priority", "3"],
+        "set_low_prio",
+    );
+    let _ = run_br(
+        &workspace,
+        ["update", &id_high, "--priority", "1"],
+        "set_high_prio",
+    );
+    let _ = run_br(
+        &workspace,
+        ["update", &id_crit, "--priority", "0"],
+        "set_crit_prio",
+    );
+
+    let output = run_br(&workspace, ["list", "--json"], "list_priority_order_json");
+    assert!(
+        output.status.success(),
+        "list priority ordering json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    let normalized = normalize_json(&json);
+    assert_json_snapshot!("list_priority_ordering_json_output", normalized);
+
+    // Also verify ordering programmatically: priorities should be ascending
+    if let Value::Array(items) = &json {
+        let priorities: Vec<i64> = items
+            .iter()
+            .filter_map(|item| item.get("priority").and_then(Value::as_i64))
+            .collect();
+        for window in priorities.windows(2) {
+            assert!(
+                window[0] <= window[1],
+                "list ordering violated: P{} should come before P{}",
+                window[0],
+                window[1]
+            );
+        }
+    }
+}
+
+#[test]
+fn snapshot_ready_priority_ordering_json() {
+    let workspace = init_workspace();
+
+    // Create multiple ready issues with different priorities
+    let id_p3 = create_issue(&workspace, "Backlog ready task", "create_ready_p3");
+    let id_p1 = create_issue(&workspace, "Urgent ready task", "create_ready_p1");
+    let id_p2 = create_issue(&workspace, "Normal ready task", "create_ready_p2");
+
+    let _ = run_br(
+        &workspace,
+        ["update", &id_p3, "--priority", "3"],
+        "set_ready_p3",
+    );
+    let _ = run_br(
+        &workspace,
+        ["update", &id_p1, "--priority", "1"],
+        "set_ready_p1",
+    );
+    let _ = run_br(
+        &workspace,
+        ["update", &id_p2, "--priority", "2"],
+        "set_ready_p2",
+    );
+
+    let output = run_br(&workspace, ["ready", "--json"], "ready_priority_order_json");
+    assert!(
+        output.status.success(),
+        "ready priority ordering json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    let normalized = normalize_json(&json);
+    assert_json_snapshot!("ready_priority_ordering_json_output", normalized);
+
+    // Ready uses hybrid sort: P0/P1 first, then others by created_at ASC.
+    // The snapshot locks down the exact ordering. Verify P0/P1 appear before P2+.
+    if let Value::Array(items) = &json {
+        let priorities: Vec<i64> = items
+            .iter()
+            .filter_map(|item| item.get("priority").and_then(Value::as_i64))
+            .collect();
+        let high_prio_end = priorities.iter().position(|&p| p > 1).unwrap_or(priorities.len());
+        for &p in &priorities[..high_prio_end] {
+            assert!(p <= 1, "P0/P1 should appear in the first group, got P{p}");
+        }
+        for &p in &priorities[high_prio_end..] {
+            assert!(p > 1, "P2+ should appear in the second group, got P{p}");
+        }
+    }
+}
+
+// ============================================================================
+// Multiple IDs / Complex Scenarios
+// ============================================================================
+
+#[test]
+fn snapshot_show_multiple_ids_json() {
+    let workspace = init_workspace();
+    let id1 = create_issue(&workspace, "First detailed issue", "create_multi_1");
+    let id2 = create_issue(&workspace, "Second detailed issue", "create_multi_2");
+
+    let output = run_br(
+        &workspace,
+        ["show", &id1, &id2, "--json"],
+        "show_multi_json",
+    );
+    assert!(
+        output.status.success(),
+        "show multiple ids json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    let normalized = normalize_json(&json);
+    assert_json_snapshot!("show_multiple_ids_json_output", normalized);
+
+    // Verify we got exactly 2 results
+    if let Value::Array(items) = &json {
+        assert_eq!(items.len(), 2, "show with 2 IDs should return 2 results");
+    }
+}
+
+#[test]
+fn snapshot_count_grouped_by_type_json() {
+    let workspace = init_workspace();
+    let id1 = create_issue(&workspace, "Bug to fix", "create_typed_bug");
+    let id2 = create_issue(&workspace, "Feature to add", "create_typed_feature");
+    create_issue(&workspace, "Plain task", "create_typed_task");
+
+    let _ = run_br(
+        &workspace,
+        ["update", &id1, "--type", "bug"],
+        "set_type_bug",
+    );
+    let _ = run_br(
+        &workspace,
+        ["update", &id2, "--type", "feature"],
+        "set_type_feature",
+    );
+
+    let output = run_br(
+        &workspace,
+        ["count", "--by", "type", "--json"],
+        "count_by_type_json",
+    );
+    assert!(
+        output.status.success(),
+        "count grouped by type json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("count_grouped_by_type_json_output", normalize_json(&json));
+}
+
+#[test]
+fn snapshot_count_grouped_by_priority_json() {
+    let workspace = init_workspace();
+    let id1 = create_issue(&workspace, "Critical item", "create_prio_p0");
+    let id2 = create_issue(&workspace, "Normal item", "create_prio_p2");
+    create_issue(&workspace, "Default item", "create_prio_default");
+
+    let _ = run_br(
+        &workspace,
+        ["update", &id1, "--priority", "0"],
+        "set_prio_p0",
+    );
+    let _ = run_br(
+        &workspace,
+        ["update", &id2, "--priority", "3"],
+        "set_prio_p3",
+    );
+
+    let output = run_br(
+        &workspace,
+        ["count", "--by", "priority", "--json"],
+        "count_by_priority_json",
+    );
+    assert!(
+        output.status.success(),
+        "count grouped by priority json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!(
+        "count_grouped_by_priority_json_output",
+        normalize_json(&json)
+    );
+}
+
+#[test]
+fn snapshot_graph_all_json() {
+    let workspace = init_workspace();
+    let root1 = create_issue(&workspace, "Graph root A", "create_graph_root_a");
+    let child1 = create_issue(&workspace, "Graph child of A", "create_graph_child_a");
+    let root2 = create_issue(&workspace, "Graph root B", "create_graph_root_b");
+
+    let _ = run_br(
+        &workspace,
+        ["dep", "add", &child1, &root1],
+        "graph_all_dep_add",
+    );
+
+    // graph --all shows all roots
+    let output = run_br(&workspace, ["graph", "--all", "--json"], "graph_all_json");
+    assert!(
+        output.status.success(),
+        "graph all json failed: {}",
+        output.stderr
+    );
+
+    let json: Value = serde_json::from_str(&output.stdout).expect("parse json");
+    assert_json_snapshot!("graph_all_json_output", normalize_json(&json));
+
+    // Suppress unused variable warning
+    let _ = root2;
+}
