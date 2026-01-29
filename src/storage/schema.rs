@@ -82,7 +82,8 @@ pub const SCHEMA_SQL: &str = r"
         ON issues(status, priority, created_at)
         WHERE status IN ('open', 'in_progress')
         AND ephemeral = 0
-        AND pinned = 0;
+        AND pinned = 0
+        AND (is_template = 0 OR is_template IS NULL);
 
     -- Dependencies
     CREATE TABLE IF NOT EXISTS dependencies (
@@ -217,6 +218,14 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
     // Enable foreign keys
     conn.pragma_update(None, "foreign_keys", "ON")?;
 
+    // Performance PRAGMAs (safe with WAL mode)
+    // NORMAL synchronous is safe with WAL: committed data survives OS crash
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // Use memory for temp tables/indexes instead of disk
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    // 8MB page cache (default is ~2MB), improves read-heavy workloads
+    conn.pragma_update(None, "cache_size", "-8000")?;
+
     Ok(())
 }
 
@@ -251,6 +260,15 @@ fn run_pre_schema_migrations(conn: &Connection) -> Result<()> {
         if !has_blocked_at || !has_blocked_by || !has_issue_id {
             conn.execute("DROP TABLE IF EXISTS blocked_issues_cache", [])?;
         }
+    }
+
+    // Ensure is_template column exists on issues table.
+    // The idx_issues_ready index references this column in its WHERE clause.
+    if table_exists(conn, "issues") && !column_exists(conn, "issues", "is_template") {
+        conn.execute(
+            "ALTER TABLE issues ADD COLUMN is_template INTEGER DEFAULT 0",
+            [],
+        )?;
     }
 
     Ok(())

@@ -1054,8 +1054,10 @@ impl SqliteStorage {
             sql.push_str(" AND status IN ('open', 'in_progress')");
         }
 
-        // Ready condition 2: NOT in blocked_issues_cache (optimized: filter in SQL)
-        sql.push_str(" AND id NOT IN (SELECT issue_id FROM blocked_issues_cache)");
+        // Ready condition 2: NOT in blocked_issues_cache (NOT EXISTS is faster than NOT IN)
+        sql.push_str(
+            " AND NOT EXISTS (SELECT 1 FROM blocked_issues_cache WHERE issue_id = issues.id)",
+        );
 
         // Ready condition 3: `defer_until` is NULL or <= now (unless `include_deferred`)
         if !filters.include_deferred {
@@ -1321,7 +1323,7 @@ impl SqliteStorage {
                       FROM dependencies d
                       INNER JOIN blocked_issues_cache bc ON d.depends_on_id = bc.issue_id
                       WHERE d.type = 'parent-child'
-                        AND d.issue_id NOT IN (SELECT issue_id FROM blocked_issues_cache)",
+                        AND NOT EXISTS (SELECT 1 FROM blocked_issues_cache WHERE issue_id = d.issue_id)",
                 )?;
 
                 stmt.query_map([], |row| {
