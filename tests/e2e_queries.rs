@@ -866,3 +866,78 @@ fn e2e_saved_queries_errors() {
         "error should mention invalid characters"
     );
 }
+
+/// E2E test: CLI args override saved query filters at run time.
+#[test]
+fn e2e_saved_queries_run_with_overrides() {
+    let _log = common::test_log("e2e_saved_queries_run_with_overrides");
+    let workspace = BrWorkspace::new();
+
+    let init = run_br(&workspace, ["init"], "override_init");
+    assert!(init.status.success());
+
+    // Create issues with different types
+    let id_bug = {
+        let c = run_br(&workspace, ["create", "Login crash"], "override_bug");
+        assert!(c.status.success());
+        parse_created_id(&c.stdout)
+    };
+    let _ = run_br(
+        &workspace,
+        ["update", &id_bug, "--type", "bug"],
+        "override_set_bug",
+    );
+
+    let id_feat = {
+        let c = run_br(&workspace, ["create", "Add theme"], "override_feat");
+        assert!(c.status.success());
+        parse_created_id(&c.stdout)
+    };
+    let _ = run_br(
+        &workspace,
+        ["update", &id_feat, "--type", "feature"],
+        "override_set_feat",
+    );
+
+    // Save a query that filters by type=bug
+    let save = run_br(
+        &workspace,
+        ["query", "save", "bugs-only", "--type", "bug"],
+        "override_save",
+    );
+    assert!(save.status.success(), "save failed: {}", save.stderr);
+
+    // Run saved query - should return only bugs
+    let run_default = run_br(
+        &workspace,
+        ["query", "run", "bugs-only", "--json"],
+        "override_run_default",
+    );
+    assert!(run_default.status.success());
+
+    let payload = extract_json_payload(&run_default.stdout);
+    let issues: Vec<Value> = serde_json::from_str(&payload).expect("json parse");
+    assert!(
+        issues.iter().all(|i| i["issue_type"] == "bug"),
+        "saved query should only return bugs"
+    );
+
+    // Run with CLI override: type=feature should override saved type=bug
+    let run_override = run_br(
+        &workspace,
+        ["query", "run", "bugs-only", "--type", "feature", "--json"],
+        "override_run_override",
+    );
+    assert!(run_override.status.success());
+
+    let payload = extract_json_payload(&run_override.stdout);
+    let overridden: Vec<Value> = serde_json::from_str(&payload).expect("json parse");
+    assert!(
+        overridden.iter().all(|i| i["issue_type"] == "feature"),
+        "CLI --type should override saved query filter, got: {:?}",
+        overridden
+            .iter()
+            .map(|i| i["issue_type"].as_str().unwrap_or("?"))
+            .collect::<Vec<_>>()
+    );
+}

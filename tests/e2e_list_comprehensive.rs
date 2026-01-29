@@ -928,6 +928,74 @@ fn e2e_list_csv_custom_fields() {
     assert_eq!(header, "id,title,priority,assignee");
 }
 
+#[test]
+fn e2e_list_csv_escaping() {
+    let _log = common::test_log("e2e_list_csv_escaping");
+    let workspace = BrWorkspace::new();
+
+    let init = run_br(&workspace, ["init"], "init");
+    assert!(init.status.success());
+
+    // Create issues with CSV-problematic characters
+    let create_comma = run_br(
+        &workspace,
+        ["create", "Fix login, signup flow"],
+        "create_comma",
+    );
+    assert!(create_comma.status.success());
+
+    let create_quote = run_br(
+        &workspace,
+        ["create", "Handle \"double quotes\" properly"],
+        "create_quote",
+    );
+    assert!(create_quote.status.success());
+
+    let list = run_br(&workspace, ["list", "--format", "csv"], "list_csv_escape");
+    assert!(list.status.success(), "list csv failed: {}", list.stderr);
+
+    let lines: Vec<&str> = list.stdout.lines().collect();
+    assert!(lines.len() >= 3, "should have header + 2 data rows");
+
+    // Verify the title with comma is quoted
+    let csv_text = &list.stdout;
+    assert!(
+        csv_text.contains("\"Fix login, signup flow\"")
+            || csv_text.contains("Fix login, signup flow"),
+        "comma in title should be properly handled in CSV"
+    );
+
+    // Verify each data row has the same number of commas as the header
+    // (field count consistency)
+    let header_fields = lines[0].matches(',').count();
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if !line.is_empty() {
+            // For quoted fields, count commas outside quotes
+            let unquoted_comma_count = count_csv_field_separators(line);
+            assert_eq!(
+                unquoted_comma_count, header_fields,
+                "row {i} has {unquoted_comma_count} separators, expected {header_fields}: {line}"
+            );
+        }
+    }
+}
+
+/// Count field separator commas in a CSV line (ignoring commas inside quotes).
+fn count_csv_field_separators(line: &str) -> usize {
+    let mut in_quotes = false;
+    let mut count = 0;
+    let mut prev = '\0';
+    for ch in line.chars() {
+        match ch {
+            '"' if prev != '\\' => in_quotes = !in_quotes,
+            ',' if !in_quotes => count += 1,
+            _ => {}
+        }
+        prev = ch;
+    }
+    count
+}
+
 // =============================================================================
 // COMBINED FILTER TESTS
 // =============================================================================
