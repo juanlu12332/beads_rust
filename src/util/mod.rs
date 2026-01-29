@@ -62,6 +62,21 @@ pub fn last_touched_path(beads_dir: &Path) -> PathBuf {
     resolve_cache_dir(beads_dir).join(LAST_TOUCHED_FILE)
 }
 
+const DB_FILE: &str = "beads.db";
+
+/// Build the path to the SQLite database file.
+///
+/// The file location is determined by:
+/// 1. `BEADS_CACHE_DIR` environment variable (if set)
+/// 2. The `.beads` directory (default)
+///
+/// This allows storing the database (and its WAL/SHM files) on a fast local
+/// filesystem when the `.beads` directory is on a slow network mount.
+#[must_use]
+pub fn db_path(beads_dir: &Path) -> PathBuf {
+    resolve_cache_dir(beads_dir).join(DB_FILE)
+}
+
 /// Best-effort write of the last-touched issue ID.
 ///
 /// Errors are ignored to match classic bd behavior.

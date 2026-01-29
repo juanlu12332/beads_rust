@@ -1,6 +1,7 @@
 use crate::error::{BeadsError, Result};
 use crate::output::{OutputContext, OutputMode};
 use crate::storage::SqliteStorage;
+use crate::util::db_path;
 use rich_rust::prelude::*;
 use std::fs;
 use std::path::Path;
@@ -21,21 +22,26 @@ pub fn execute(
 
     let mut created_dir = false;
     if beads_dir.exists() {
-        // Check if DB exists
-        let db_path = beads_dir.join("beads.db");
-        if db_path.exists() && !force {
-            return Err(BeadsError::AlreadyInitialized { path: db_path });
+        // Check if DB exists (in cache dir if BEADS_CACHE_DIR is set)
+        let effective_db_path = db_path(&beads_dir);
+        if effective_db_path.exists() && !force {
+            return Err(BeadsError::AlreadyInitialized { path: effective_db_path });
         }
     } else {
         fs::create_dir(&beads_dir)?;
         created_dir = true;
     }
 
-    let db_path = beads_dir.join("beads.db");
-    let db_existed = db_path.exists();
+    let effective_db_path = db_path(&beads_dir);
+    let db_existed = effective_db_path.exists();
+
+    // Ensure cache directory exists if using BEADS_CACHE_DIR
+    if let Some(parent) = effective_db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     // Initialize DB (creates file and applies schema)
-    let mut storage = SqliteStorage::open(&db_path)?;
+    let mut storage = SqliteStorage::open(&effective_db_path)?;
 
     // Set prefix in config table if provided
     let mut prefix_set = None;

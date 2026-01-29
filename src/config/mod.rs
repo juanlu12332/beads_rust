@@ -507,7 +507,10 @@ fn resolve_db_path(
     if candidate.is_absolute() {
         candidate
     } else {
-        beads_dir.join(candidate)
+        // Use BEADS_CACHE_DIR if set, otherwise beads_dir
+        // This allows storing the database on a fast local filesystem
+        // when .beads is on a slow network mount
+        crate::util::resolve_cache_dir(beads_dir).join(candidate)
     }
 }
 
