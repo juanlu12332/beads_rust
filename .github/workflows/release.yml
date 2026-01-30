@@ -165,7 +165,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           curl -sL https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-linux.tar.gz | tar xz
-          sudo mv minisign-linux/x86_64/minisign /usr/local/bin/
+          # Use architecture-appropriate binary (x86_64 or aarch64)
+          ARCH=$(uname -m)
+          if [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
+            sudo mv minisign-linux/aarch64/minisign /usr/local/bin/
+          else
+            sudo mv minisign-linux/x86_64/minisign /usr/local/bin/
+          fi
 
       - name: Generate checksum (Linux)
         if: runner.os == 'Linux'
