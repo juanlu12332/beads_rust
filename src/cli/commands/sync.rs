@@ -925,7 +925,8 @@ fn execute_import(
 
     // Configure import
     let import_config = ImportConfig {
-        skip_prefix_validation: args.force,
+        // Keep prefix validation when explicitly renaming prefixes.
+        skip_prefix_validation: args.force && !args.rename_prefix,
         rename_on_import: args.rename_prefix,
         clear_duplicate_external_refs: false,
         orphan_mode,
