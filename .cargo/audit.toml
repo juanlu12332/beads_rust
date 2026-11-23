@@ -3,11 +3,4 @@
 
 [advisories]
 # Ignore specific advisories that don't affect our use case
-ignore = [
-    # gix-date: Non-utf8 String can be created with TimeBuf::as_str
-    # This is a low-risk issue in a transitive dependency (vergen-gix -> gix).
-    # We don't use gix-date directly and the issue only affects edge cases
-    # with malformed git timestamps. Waiting for vergen-gix to update.
-    # https://rustsec.org/advisories/RUSTSEC-2025-0140
-    "RUSTSEC-2025-0140",
-]
+ignore = []
